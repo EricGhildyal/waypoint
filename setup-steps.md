@@ -11,15 +11,15 @@ and the database seeds itself on first boot — there are no manual DB steps.
 
 ## 1. Accounts & credentials to collect
 
-| #   | What                                             | Where it goes                              |
-| --- | ------------------------------------------------ | ------------------------------------------ |
-| 1.1 | Google OAuth client id + secret                  | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` |
-| 1.2 | Resend API key + inbound webhook signing secret  | `RESEND_API_KEY`, `RESEND_WEBHOOK_SECRET`  |
-| 1.3 | Claude Max OAuth token (`claude setup-token`)    | `CLAUDE_CODE_OAUTH_TOKEN`                  |
-| 1.4 | Anthropic API key (models list only)             | `ANTHROPIC_API_KEY`                        |
-| 1.5 | GitHub PAT (repo scope)                          | `GITHUB_DEFAULT_PAT`                       |
-| 1.6 | VPS (~20 GB RAM) + Object Storage bucket | host + `LITESTREAM_*`                      |
-| 1.7 | Two generated secrets (`openssl rand …`)         | `AUTH_SECRET`, `MASTER_ENCRYPTION_KEY`     |
+| #   | What                                            | Where it goes                              |
+| --- | ----------------------------------------------- | ------------------------------------------ |
+| 1.1 | Google OAuth client id + secret                 | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` |
+| 1.2 | Resend API key + inbound webhook signing secret | `RESEND_API_KEY`, `RESEND_WEBHOOK_SECRET`  |
+| 1.3 | Claude Max OAuth token (`claude setup-token`)   | `CLAUDE_CODE_OAUTH_TOKEN`                  |
+| 1.4 | Anthropic API key (models list only)            | `ANTHROPIC_API_KEY`                        |
+| 1.5 | GitHub PAT (repo scope)                         | `GITHUB_DEFAULT_PAT`                       |
+| 1.6 | VPS (~20 GB RAM) + Object Storage bucket        | host + `LITESTREAM_*`                      |
+| 1.7 | Two generated secrets (`openssl rand …`)        | `AUTH_SECRET`, `MASTER_ENCRYPTION_KEY`     |
 
 Details for each below.
 
@@ -83,12 +83,12 @@ Also add the public half of `VPS_SSH_KEY` (step 2.4) to `~/.ssh/authorized_keys`
 The app, email **send**, and email **receive** all live on `waypoint.[MY_DOMAIN]` —
 an MX record coexists fine with the A record on the same host (§8).
 
-| Type            | Name                                        | Value                                                                                                | Purpose                                                             |
-| --------------- | ------------------------------------------- | ---------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
-| A               | `waypoint`                                  | `<VPS IP>`                                                                                           | the app; Caddy auto-provisions TLS once this resolves               |
+| Type            | Name                                        | Value                                                                                                | Purpose                                                                 |
+| --------------- | ------------------------------------------- | ---------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------- |
+| A               | `waypoint`                                  | `<VPS IP>`                                                                                           | the app; Caddy auto-provisions TLS once this resolves                   |
 | TXT + CNAME/TXT | _(exact records from the Resend dashboard)_ | DKIM + SPF                                                                                           | verify `waypoint.[MY_DOMAIN]` as a Resend **sending** domain (step 5.2) |
-| MX              | `waypoint`                                  | _(Resend's inbound server, exact value from the dashboard — e.g. `inbound.resend.com`, priority 10)_ | reply-by-email → Resend inbound (step 5.3)                          |
-| TXT             | `_dmarc.waypoint`                           | `v=DMARC1; p=none; rua=mailto:[me@email.com]`                                                | optional, deliverability                                            |
+| MX              | `waypoint`                                  | _(Resend's inbound server, exact value from the dashboard — e.g. `inbound.resend.com`, priority 10)_ | reply-by-email → Resend inbound (step 5.3)                              |
+| TXT             | `_dmarc.waypoint`                           | `v=DMARC1; p=none; rua=mailto:[me@email.com]`                                                        | optional, deliverability                                                |
 
 ⚠️ Caddy can only obtain the certificate after the A record propagates — create
 it before the first deploy.
@@ -292,19 +292,19 @@ base). `make doctor` reports what's missing.
 
 ## Quick reference — every `.env` value and where it comes from
 
-| Var                                         | Source                            |
-| ------------------------------------------- | --------------------------------- |
+| Var                                         | Source                                |
+| ------------------------------------------- | ------------------------------------- |
 | `APP_URL`, `AUTH_URL`                       | fixed: `https://waypoint.[MY_DOMAIN]` |
-| `AUTH_SECRET`                               | step 9                            |
-| `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | step 6                            |
-| `MASTER_ENCRYPTION_KEY`                     | step 9                            |
-| `SEED_ALLOWED_EMAILS`                       | your email(s)                     |
-| `RESEND_API_KEY`                            | step 5.1                          |
-| `RESEND_WEBHOOK_SECRET`                     | step 5.4                          |
+| `AUTH_SECRET`                               | step 9                                |
+| `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | step 6                                |
+| `MASTER_ENCRYPTION_KEY`                     | step 9                                |
+| `SEED_ALLOWED_EMAILS`                       | your email(s)                         |
+| `RESEND_API_KEY`                            | step 5.1                              |
+| `RESEND_WEBHOOK_SECRET`                     | step 5.4                              |
 | `EMAIL_FROM`                                | `waypoint@waypoint.[MY_DOMAIN]`       |
 | `INBOUND_DOMAIN`                            | `waypoint.[MY_DOMAIN]`                |
-| `CLAUDE_CODE_OAUTH_TOKEN`                   | step 7.1 (`claude setup-token`)   |
-| `ANTHROPIC_API_KEY`                         | step 7.2                          |
-| `GITHUB_DEFAULT_PAT`                        | step 8                            |
-| `GHCR_USER`                                 | your GitHub username              |
-| `LITESTREAM_*`                              | step 10                           |
+| `CLAUDE_CODE_OAUTH_TOKEN`                   | step 7.1 (`claude setup-token`)       |
+| `ANTHROPIC_API_KEY`                         | step 7.2                              |
+| `GITHUB_DEFAULT_PAT`                        | step 8                                |
+| `GHCR_USER`                                 | your GitHub username                  |
+| `LITESTREAM_*`                              | step 10                               |

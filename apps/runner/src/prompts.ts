@@ -12,7 +12,6 @@ const PROMPT_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), "..",
 
 /** Difficulty affects planning depth only (§7). */
 const PLAN_DEPTH: Record<string, string> = {
-    
   EASY: "- Goal\n- Ordered implementation steps (checkboxes)\n- Test plan\n- Out of scope",
   MEDIUM:
     "- Goal\n- Relevant files & context\n- Ordered implementation steps (checkboxes)\n- Risks\n- Edge cases\n- Test plan\n- Out of scope",
