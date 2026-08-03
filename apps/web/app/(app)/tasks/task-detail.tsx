@@ -199,6 +199,8 @@ export function TaskDetailView({ initial, focus }: { initial: TaskDetail; focus:
         </div>
       </div>
 
+      <PromptPanel prompt={task.prompt} />
+
       {task.status === "FAILED" && task.failureCode ? (
         <Card className="border-red-900/60 bg-red-950/20">
           <p className="text-sm font-medium text-red-300">{task.failureCode}</p>
@@ -297,6 +299,31 @@ function RetryButton({
         </form>
       </Dialog>
     </>
+  );
+}
+
+/**
+ * Read-only view of the task's prompt, one click away from every tab. It is an
+ * uncontrolled <details> so the open/closed state survives the page's 2.5s SWR
+ * re-renders without any state plumbing.
+ */
+function PromptPanel({ prompt }: { prompt: string }) {
+  return (
+    <details className="rounded-xl border border-zinc-800 bg-zinc-900/50">
+      <summary className="cursor-pointer select-none px-4 py-3 text-sm font-semibold text-zinc-200">
+        Prompt
+      </summary>
+      <div className="border-t border-zinc-800 p-4">
+        {prompt.trim() ? (
+          // plain text, not markdown: the prompt as the author actually wrote it
+          <p className="feed-scroll max-h-80 overflow-y-auto whitespace-pre-wrap wrap-break-word text-sm text-zinc-300">
+            {prompt}
+          </p>
+        ) : (
+          <p className="text-sm text-zinc-500">No prompt recorded.</p>
+        )}
+      </div>
+    </details>
   );
 }
 
