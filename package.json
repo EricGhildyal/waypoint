@@ -21,9 +21,11 @@
     "lint": "oxlint",
     "lint:fix": "oxlint --fix",
     "format": "prettier --write .",
-    "format:check": "prettier --check ."
+    "format:check": "prettier --check .",
+    "e2e": "playwright test --config e2e/playwright.config.ts"
   },
   "devDependencies": {
+    "@playwright/test": "^1.62.1",
     "oxlint": "1.77.0",
     "prettier": "3.9.6"
   }
