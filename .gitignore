@@ -55,3 +55,8 @@ packages/core/prisma/*.db-shm
 # local dev (make run): stamps + task transcripts/artifacts
 /.make/
 /.local/
+
+# playwright (e2e)
+/test-results/
+/playwright-report/
+/.playwright-mcp/

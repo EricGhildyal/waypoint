@@ -9,3 +9,8 @@ bun.lock
 .make/
 .local/
 data/
+
+# playwright output
+test-results/
+playwright-report/
+.playwright-mcp/
