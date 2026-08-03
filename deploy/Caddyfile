@@ -1,0 +1,51 @@
+# Waypoint edge (§11): auto-TLS, hardened headers, rate limiting, default-deny
+# beyond what the app itself enforces. /api/health is NOT proxied — Docker
+# healthchecks hit containers directly on the internal network.
+{
+	order rate_limit before basic_auth
+}
+
+waypoint.ergh.co {
+	encode zstd gzip
+
+	header {
+		Strict-Transport-Security "max-age=63072000; includeSubDomains; preload"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		Content-Security-Policy "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://lh3.googleusercontent.com; script-src 'self' 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'"
+		-Server
+	}
+
+	# not publicly routed (§4)
+	@health path /api/health
+	respond @health 404
+
+	# tight buckets on the OAuth dance and the inbound webhook; sane burst
+	# limits on everything else (§11)
+	rate_limit {
+		zone auth {
+			match {
+				path /api/auth/*
+			}
+			key {remote_host}
+			events 30
+			window 1m
+		}
+		zone webhook {
+			match {
+				path /api/webhooks/*
+			}
+			key {remote_host}
+			events 60
+			window 1m
+		}
+		zone general {
+			key {remote_host}
+			events 600
+			window 1m
+		}
+	}
+
+	reverse_proxy web:3000
+}

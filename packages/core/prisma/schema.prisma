@@ -1,0 +1,271 @@
+// Waypoint data model — see plans/waypoint-init.md §3.
+// SQLite via @prisma/adapter-better-sqlite3; connection URL in prisma.config.ts.
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+enum TaskStatus {
+  QUEUED // eligible, waiting for a slot
+  SCHEDULED // waiting for scheduledAt
+  BLOCKED // waiting on dependsOn task
+  PLANNING
+  AWAITING_PLAN_APPROVAL
+  IMPLEMENTING
+  REVIEWING
+  TESTING
+  NEEDS_INPUT // open question from any stage
+  PAUSED // user-initiated or budget-exceeded (see pauseReason)
+  RATE_LIMITED // Max plan window exhausted; auto-resumes
+  OPENING_PR
+  DONE
+  FAILED // infra failure, recoverable via Retry (see failureCode)
+  CANCELLED
+}
+
+enum Stage {
+  PLANNING
+  IMPLEMENTATION
+  REVIEW
+  TESTING
+}
+
+enum Difficulty {
+  EASY
+  MEDIUM
+  HARD
+}
+
+enum StageRunStatus {
+  RUNNING
+  SUCCEEDED
+  FAILED
+  INTERRUPTED
+}
+
+enum QuestionKind {
+  QUESTION
+  PLAN_APPROVAL
+  FINDINGS_APPROVAL // per-finding yes/no gate after a review round (§7)
+}
+
+enum QuestionStatus {
+  OPEN
+  ANSWERED
+  EXPIRED
+}
+
+enum AnsweredVia {
+  UI
+  EMAIL
+}
+
+enum PauseReason {
+  USER
+  BUDGET_EXCEEDED
+  CYCLE_CAP
+}
+
+enum FailureCode {
+  DOCKER_CREATE
+  DOCKER_START
+  GIT_CLONE
+  SETUP_COMMAND
+  RUNNER_CRASH
+  HEARTBEAT_LOST
+  PUSH_FAILED
+  PR_FAILED
+}
+
+enum CoverageFormat {
+  COBERTURA_XML
+  LCOV
+  CLOVER_XML
+  JACOCO_XML
+  GO_COVERPROFILE
+}
+
+enum EventType {
+  STATUS_CHANGE
+  CHECKLIST_UPDATE
+  TOKEN_UPDATE
+  QUESTION
+  ANSWER
+  STEER
+  LOG
+  ERROR
+  STAGE_START
+  STAGE_END
+  REVIEW_FINDINGS
+  TEST_FINDINGS
+  PR_OPENED
+}
+
+model Project {
+  id                 String         @id @default(uuid(4))
+  name               String         @unique
+  repoUrl            String // https clone URL
+  defaultBranch      String         @default("main")
+  branchTemplate     String         @default("eric/{id}") // placeholders: {id} {slug} {difficulty} {project}
+  setupCommand       String // e.g. "bun install && bun db:push"
+  runCommand         String // starts app for the testing stage
+  runReadyUrl        String? // URL polled to detect app is up, e.g. http://localhost:3000
+  migrateCommand     String?
+  testCommand        String // must emit coverage report
+  coverageFormat     CoverageFormat @default(LCOV)
+  coverageReportPath String         @default("coverage/lcov.info")
+  lintCommand        String?
+  formatCommand      String?
+  dockerfilePath     String? // optional custom image; else generic runner image
+  instructions       String         @default("") // project CLAUDE.md content, injected into every stage
+  coverageBar        Int            @default(100) // % of changed lines
+  createdAt          DateTime       @default(now())
+  updatedAt          DateTime       @updatedAt
+  secrets            Secret[]
+  tasks              Task[]
+}
+
+model Secret {
+  id         String   @id @default(uuid(4))
+  projectId  String? // null = global (e.g. default GH PAT, Claude OAuth token)
+  project    Project? @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  key        String // env var name, or "GIT_PAT" / "CLAUDE_CODE_OAUTH_TOKEN"
+  ciphertext String // packed "v1:{ivB64}:{tagB64}:{dataB64}" — AES-256-GCM,
+  // key = MASTER_ENCRYPTION_KEY (32-byte hex). Versioned
+  // prefix allows future key rotation without a migration.
+
+  @@unique([projectId, key])
+}
+
+model Task {
+  id                  String       @id @default(uuid(4))
+  projectId           String
+  project             Project      @relation(fields: [projectId], references: [id])
+  title               String
+  prompt              String
+  difficulty          Difficulty
+  status              TaskStatus   @default(QUEUED)
+  currentStage        Stage?
+  pauseReason         PauseReason?
+  failureCode         FailureCode?
+  failureDetail       String? // human-readable detail / log tail pointer, shown on the FAILED card
+  checklist           Json? // full TodoWrite snapshot: [{ text, state }] — replaced wholesale on
+  // every CHECKLIST_UPDATE (message-history-like, hence Json)
+  planningModel       String
+  implementationModel String
+  reviewModel         String
+  testingModel        String
+  scheduledAt         DateTime?
+  dependsOnTaskId     String?
+  dependsOn           Task?        @relation("deps", fields: [dependsOnTaskId], references: [id])
+  dependents          Task[]       @relation("deps")
+  tokenBudget         Int? // total tokens; pause when exceeded
+  branchName          String?
+  prUrl               String?
+  reviewCycles        Int          @default(0)
+  testingCycles       Int          @default(0)
+  containerId         String?
+  runnerToken         String       @unique @default(uuid(4)) // bearer for runner->host sync
+  createdById         String
+  createdBy           User         @relation(fields: [createdById], references: [id])
+  createdAt           DateTime     @default(now())
+  updatedAt           DateTime     @updatedAt
+  startedAt           DateTime?
+  endedAt             DateTime?
+  stageRuns           StageRun[]
+  questions           Question[]
+  events              Event[]
+  steering            SteeringMessage[]
+
+  @@index([status])
+  @@index([projectId])
+}
+
+model StageRun {
+  id                  String         @id @default(uuid(4))
+  taskId              String
+  task                Task           @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  stage               Stage
+  attempt             Int            @default(1) // increments on review/testing bounce-backs & retries
+  sessionId           String? // Agent SDK session id (captured from init message)
+  model               String
+  status              StageRunStatus @default(RUNNING)
+  inputTokens         Int            @default(0) // all four counters are cumulative absolutes,
+  outputTokens        Int            @default(0) // overwritten (not summed) on each usage sync
+  cacheReadTokens     Int            @default(0)
+  cacheCreationTokens Int            @default(0)
+  transcriptPath      String? // JSONL on task-data volume, not in DB
+  startedAt           DateTime       @default(now())
+  endedAt             DateTime?
+
+  @@unique([taskId, stage, attempt])
+  @@index([taskId])
+}
+
+model Question {
+  id             String         @id @default(uuid(4))
+  taskId         String
+  task           Task           @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  stageRunId     String
+  kind           QuestionKind   @default(QUESTION)
+  text           String // full question from the agent
+  contextSummary String // 1-3 sentence high-level context — this is what goes in the email
+  options        Json? // optional multiple-choice options
+  items          Json? // FINDINGS_APPROVAL: [{ number, auto, category, file, ... }] — the checkbox list
+  status         QuestionStatus @default(OPEN)
+  answer         String?
+  answeredVia    AnsweredVia?
+  emailMessageId String? // outbound Message-ID for reply threading
+  createdAt      DateTime       @default(now())
+  answeredAt     DateTime?
+
+  @@index([taskId, status])
+}
+
+model SteeringMessage {
+  id          String    @id @default(uuid(4))
+  taskId      String
+  task        Task      @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  text        String
+  createdAt   DateTime  @default(now())
+  deliveredAt DateTime? // set when returned in a sync response
+
+  @@index([taskId, deliveredAt])
+}
+
+model Event {
+  // append-only; the UI poll feed. Written ONLY via emitEvent()
+  id         String    @id @default(uuid(4))
+  taskId     String
+  task       Task      @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  stageRunId String?
+  type       EventType
+  payload    Json // shape per type — zod-validated in packages/core
+  createdAt  DateTime  @default(now())
+
+  @@index([taskId, createdAt, id]) // supports the (createdAt, id) cursor
+}
+
+model Setting {
+  // key-value — new settings need no migration (deliberate)
+  key   String @id // maxParallelTasks="3", defaultModel="claude-fable-5",
+  value String // notifyOnDone="true", containerMemGb="6", ...
+}
+
+model AllowedEmail {
+  email String @id
+}
+
+model User {
+  // minimal, upserted at sign-in. NO Auth.js adapter tables —
+  id    String  @id @default(uuid(4)) // sessions are JWTs; this row exists only for attribution.
+  email String  @unique
+  name  String?
+  image String?
+  tasks Task[]
+}

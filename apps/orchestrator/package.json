@@ -1,0 +1,24 @@
+{
+  "name": "@waypoint/orchestrator",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "start": "tsx src/index.ts",
+    "healthcheck": "tsx src/healthcheck.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@waypoint/core": "workspace:*",
+    "dockerode": "^4.0.9",
+    "octokit": "^5.0.0",
+    "resend": "^6.9.0",
+    "tsx": "^4.20.0",
+    "zod": "^4.1.13"
+  },
+  "devDependencies": {
+    "@types/dockerode": "^3.3.44",
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.0"
+  }
+}

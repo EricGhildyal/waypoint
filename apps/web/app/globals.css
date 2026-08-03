@@ -1,0 +1,26 @@
+@import "tailwindcss";
+
+/* Waypoint is dark-mode only. */
+:root {
+  color-scheme: dark;
+}
+
+body {
+  background-color: var(--color-zinc-950);
+  color: var(--color-zinc-100);
+  -webkit-font-smoothing: antialiased;
+}
+
+::selection {
+  background-color: var(--color-indigo-500);
+  color: white;
+}
+
+/* thin scrollbars for the event feed */
+.feed-scroll::-webkit-scrollbar {
+  width: 8px;
+}
+.feed-scroll::-webkit-scrollbar-thumb {
+  background-color: var(--color-zinc-700);
+  border-radius: 4px;
+}

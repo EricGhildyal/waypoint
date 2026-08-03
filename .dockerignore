@@ -1,0 +1,11 @@
+node_modules
+**/node_modules
+apps/web/.next
+packages/core/src/generated
+packages/core/prisma/*.db*
+.git
+data
+plans
+*.md
+!apps/runner/prompts/*.md
+deploy/.env

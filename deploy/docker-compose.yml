@@ -1,0 +1,72 @@
+# Waypoint deployment (§11) — Docker Compose on a VPS.
+# Task containers are created dynamically by the orchestrator on the
+# `waypoint-tasks` network, which has web attached (runner sync) and internet
+# egress — nothing else. The Docker socket is mounted into the orchestrator
+# container exclusively.
+services:
+  caddy:
+    build: ./caddy # stock caddy + the rate-limit module (xcaddy)
+    ports: ["80:80", "443:443"]
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+    restart: unless-stopped
+
+  web:
+    image: ghcr.io/${GHCR_USER}/waypoint-web:latest
+    env_file: .env
+    environment:
+      DATABASE_URL: file:/data/waypoint.db
+      TASK_DATA_DIR: /data/tasks
+    volumes:
+      - db-data:/data
+      - task-data:/data/tasks
+    networks: [default, waypoint-tasks]
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3000/api/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+    restart: unless-stopped # entrypoint: pre-migrate snapshot → prisma migrate deploy → seed → next start
+
+  orchestrator:
+    image: ghcr.io/${GHCR_USER}/waypoint-orchestrator:latest
+    env_file: .env
+    environment:
+      DATABASE_URL: file:/data/waypoint.db
+      TASK_DATA_DIR: /data/tasks
+      RUNNER_IMAGE: ghcr.io/${GHCR_USER}/waypoint-runner:latest
+      RUNNER_HOST_API: http://web:3000
+      TASKS_NETWORK: waypoint-tasks
+      TASK_DATA_VOLUME: waypoint-task-data
+    depends_on:
+      web:
+        condition: service_healthy # migrations settle before the worker starts (§3.1)
+    volumes:
+      - db-data:/data
+      - task-data:/data/tasks
+      - /var/run/docker.sock:/var/run/docker.sock
+    restart: unless-stopped
+
+  litestream:
+    image: litestream/litestream:latest
+    command: replicate -config /etc/litestream.yml
+    env_file: .env
+    volumes:
+      - db-data:/data
+      - ./litestream.yml:/etc/litestream.yml:ro
+    restart: unless-stopped # continuous replication → Object Storage (S3 API)
+
+networks:
+  default: {}
+  waypoint-tasks:
+    name: waypoint-tasks
+
+volumes:
+  db-data:
+    name: waypoint-db-data
+  task-data:
+    name: waypoint-task-data # referenced by the orchestrator when mounting runners
+  caddy-data:
+    name: waypoint-caddy-data

@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install
+        run: bun install --frozen-lockfile
+
+      # Lint and format need neither the Prisma client nor type information,
+      # so they run first and fail fast.
+      - name: Lint
+        run: bun run lint
+
+      - name: Format
+        run: bun run format:check
+
+      - name: Generate Prisma client
+        run: bun run db:generate
+
+      # migrate-diff drift check (§3.1): fail the build if schema and
+      # migrations diverge
+      - name: Migration drift check
+        run: bun run db:drift
+
+      - name: Typecheck
+        run: bun run typecheck

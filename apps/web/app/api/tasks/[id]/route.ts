@@ -1,0 +1,96 @@
+import { type NextRequest, NextResponse } from "next/server";
+import { STAGE_TO_STATUS, db, emitEvent, transition } from "@waypoint/core";
+import { z } from "zod";
+import { ApiError, apiError, assertSameOrigin, requireUser } from "@/lib/api";
+import { getTaskDetail } from "@/lib/task-detail";
+
+type Params = { params: Promise<{ id: string }> };
+
+export async function GET(_req: NextRequest, ctx: Params) {
+  try {
+    await requireUser();
+    const { id } = await ctx.params;
+    return NextResponse.json(await getTaskDetail(id));
+  } catch (err) {
+    return apiError(err);
+  }
+}
+
+const PatchSchema = z.object({
+  action: z.enum(["pause", "resume", "stop", "cancel", "steer", "retry"]),
+  prompt: z.string().optional(),
+});
+
+export async function PATCH(req: NextRequest, ctx: Params) {
+  try {
+    assertSameOrigin(req);
+    await requireUser();
+    const { id } = await ctx.params;
+    const { action, prompt } = PatchSchema.parse(await req.json());
+    const task = await db.task.findUnique({ where: { id } });
+    if (!task) throw new ApiError(404, "task not found");
+
+    switch (action) {
+      case "pause": {
+        await transition(id, "PAUSED", { pauseReason: "USER", reason: "paused by user" });
+        break;
+      }
+      case "resume": {
+        if (task.status !== "PAUSED" && task.status !== "RATE_LIMITED") {
+          throw new ApiError(409, `cannot resume from ${task.status}`);
+        }
+        await transition(id, await resumeTarget(id), { pauseReason: null });
+        break;
+      }
+      case "stop":
+      case "cancel": {
+        await transition(id, "CANCELLED", { reason: `${action} requested by user` });
+        break;
+      }
+      case "steer": {
+        if (!prompt?.trim()) throw new ApiError(400, "steer requires a prompt");
+        await db.steeringMessage.create({ data: { taskId: id, text: prompt.trim() } });
+        await emitEvent(id, "STEER", { text: prompt.trim() });
+        break;
+      }
+      case "retry": {
+        if (task.status !== "FAILED") throw new ApiError(409, "retry only applies to FAILED tasks");
+        const revised = prompt?.trim();
+        // The retry dialog sends the (possibly edited) task prompt. Rewriting
+        // Task.prompt is what makes the revision stick: the orchestrator reads
+        // it when it recreates the container. A steering message covers the
+        // case where the existing session is resumed rather than rebuilt.
+        if (revised && revised !== task.prompt) {
+          await db.task.update({ where: { id }, data: { prompt: revised } });
+          await db.steeringMessage.create({
+            data: { taskId: id, text: `The task prompt was revised for this retry:\n\n${revised}` },
+          });
+          await emitEvent(id, "STEER", { text: "task prompt revised on retry" });
+        }
+        await transition(id, await resumeTarget(id), {
+          failureCode: null,
+          failureDetail: null,
+          reason: "retry requested",
+        });
+        break;
+      }
+    }
+
+    return NextResponse.json({ ok: true });
+  } catch (err) {
+    return apiError(err);
+  }
+}
+
+/** Where a paused/rate-limited/failed task should go back to. */
+async function resumeTarget(taskId: string) {
+  const task = await db.task.findUniqueOrThrow({ where: { id: taskId } });
+  const openQuestion = await db.question.findFirst({
+    where: { taskId, status: "OPEN" },
+    orderBy: { createdAt: "desc" },
+  });
+  if (openQuestion?.kind === "PLAN_APPROVAL") return "AWAITING_PLAN_APPROVAL" as const;
+  if (openQuestion) return "NEEDS_INPUT" as const;
+  if (task.currentStage) return STAGE_TO_STATUS[task.currentStage];
+  return "QUEUED" as const;
+}

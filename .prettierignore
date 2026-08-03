@@ -1,0 +1,11 @@
+# Prettier already skips node_modules; the rest is generated or machine-owned.
+apps/web/.next/
+apps/web/next-env.d.ts
+packages/core/src/generated/
+packages/core/prisma/migrations/
+bun.lock
+
+# local dev (make run): stamps + task transcripts/artifacts
+.make/
+.local/
+data/
