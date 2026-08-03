@@ -54,11 +54,16 @@ export class Syncer {
 
   // --- outbound queueing ---------------------------------------------------
 
-  log(level: "debug" | "info" | "warn" | "error", line: string, stageRunId?: string): void {
+  log(
+    level: "debug" | "info" | "warn" | "error",
+    line: string,
+    stageRunId?: string,
+    source?: "assistant" | "thinking",
+  ): void {
     if (this.events.length >= 90) return; // sync cap safety; transcript keeps everything
     this.events.push({
       type: "LOG",
-      payload: { level, line: line.slice(0, 500) },
+      payload: { level, line: line.slice(0, 500), ...(source ? { source } : {}) },
       stageRunId,
     });
   }

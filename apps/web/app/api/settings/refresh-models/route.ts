@@ -3,16 +3,19 @@ import { setSetting } from "@waypoint/core";
 import { ApiError, apiError, assertSameOrigin, requireUser } from "@/lib/api";
 
 /**
- * Refresh the model list via Anthropic GET /v1/models (§9). ANTHROPIC_API_KEY
- * is used exclusively for this free list endpoint — all agent traffic runs on
- * the Claude Max OAuth token.
+ * Refresh the model list via Anthropic GET /v1/models (§9).
+ * MODEL_LOOKUP_ANTHROPIC_API_KEY is used exclusively for this free list
+ * endpoint — all agent traffic runs on the Claude Max OAuth token. It is
+ * deliberately not named ANTHROPIC_API_KEY: the Claude Code SDK picks that name
+ * up from the environment automatically and would bill agent runs to this API
+ * key instead of the Max subscription.
  */
 export async function POST(req: NextRequest) {
   try {
     assertSameOrigin(req);
     await requireUser();
-    const apiKey = process.env.ANTHROPIC_API_KEY;
-    if (!apiKey) throw new ApiError(400, "ANTHROPIC_API_KEY is not configured");
+    const apiKey = process.env.MODEL_LOOKUP_ANTHROPIC_API_KEY;
+    if (!apiKey) throw new ApiError(400, "MODEL_LOOKUP_ANTHROPIC_API_KEY is not configured");
 
     const ids: string[] = [];
     let afterId: string | null = null;

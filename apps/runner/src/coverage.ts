@@ -13,9 +13,11 @@ export interface GateResult {
  * (Go coverprofile → LCOV via gcov2lcov; the rest are read natively by
  * diff-cover), then `diff-cover {report} --compare-branch=origin/{default}
  * --fail-under={bar}`. Failures come back as agent feedback, not verdicts.
+ * A project without a testCommand has no gate — pass unconditionally.
  */
 export async function runTestGate(config: RunnerConfig): Promise<GateResult> {
   const { project } = config.meta;
+  if (!project.testCommand) return { ok: true, feedback: "" };
   const tests = await run(project.testCommand, {
     cwd: config.workspace,
     timeoutMs: 30 * 60 * 1000,

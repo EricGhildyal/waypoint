@@ -21,7 +21,7 @@ The user approved this plan — follow it exactly. If reality forces a deviation
 ## Rules
 
 - **Commit incrementally** with short commit messages that describe the change as you complete plan steps. Never leave the tree dirty at the end of a step.
-- **Write tests alongside code.** The harness will run `{{TEST_COMMAND}}` and enforce **{{COVERAGE_BAR}}% changed-line coverage** (diff-cover vs `origin/{{DEFAULT_BRANCH}}`) after you finish — failures come back to you to fix, so run the tests yourself as you go.
+- {{IMPL_TEST_RULE}}
 - **Track your progress with TodoWrite** — the user watches your checklist live. Seed it from the plan's checkboxes and keep it updated.
 - Use `ask_user` liberally: asking a question costs seconds; a wrong direction costs the user's precious tokens. When uncertain about intent, scope, tradeoffs, or data, ask, never guess.
 - Do not push. Do not open PRs. The harness owns git push and PR creation.

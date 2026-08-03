@@ -39,6 +39,10 @@ COPY apps/runner/tsconfig.json ./tsconfig.json
 COPY tsconfig.base.json /tsconfig.base.json
 
 ENV NODE_ENV=production
+# The agent runs as root in a throwaway container and skips permission prompts;
+# without this the CLI refuses (`--dangerously-skip-permissions cannot be used
+# with root/sudo privileges`). The container itself is the sandbox (§11).
+ENV IS_SANDBOX=1
 RUN mkdir -p /workspace
 WORKDIR /workspace
 # tsx runs on the Node 24 runtime (better-sqlite3-free image; §1 runtime note)

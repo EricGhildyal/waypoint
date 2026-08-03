@@ -161,7 +161,12 @@ export async function runImplementation(
         gateRounds = 0;
       }
 
-      sync.log("info", "running test + coverage gate");
+      sync.log(
+        "info",
+        config.meta.project.testCommand
+          ? "running test + coverage gate"
+          : "no test command configured — skipping test + coverage gate",
+      );
       const gate = await runTestGate(config);
       if (!gate.ok) return gate.feedback;
 

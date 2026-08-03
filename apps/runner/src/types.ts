@@ -111,7 +111,7 @@ export interface TaskMeta {
     runCommand: string;
     runReadyUrl: string | null;
     migrateCommand: string | null;
-    testCommand: string;
+    testCommand: string | null;
     coverageFormat: CoverageFormat;
     coverageReportPath: string;
     lintCommand: string | null;

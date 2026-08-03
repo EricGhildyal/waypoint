@@ -98,9 +98,9 @@ const ZERO: UsageTotals = {
 
 /**
  * Execute one stage attempt (§6 SDK invocation pattern): streaming input,
- * acceptEdits in the sandboxed container, in-process waypoint MCP (ask_user),
- * TodoWrite→checklist hook, transcript JSONL, usage sync, steering, pause via
- * interrupt() + session resume, rate-limit reporting.
+ * permissions bypassed inside the sandbox container, in-process waypoint MCP
+ * (ask_user), TodoWrite→checklist hook, transcript JSONL, usage sync, steering,
+ * pause via interrupt() + session resume, rate-limit reporting.
  */
 export async function runStageAgent(
   config: RunnerConfig,
@@ -166,7 +166,7 @@ async function executeQuery(
         "ask_user",
         [
           "Ask the user a question and wait for their answer.",
-          "Asking a question costs seconds; a wrong direction costs the user's tokens.",
+          "Asking a question costs seconds; a wrong direction costs the user's precious tokens.",
           "When uncertain about intent, scope, tradeoffs, or data, ask.",
         ].join(" "),
         {
@@ -206,8 +206,9 @@ async function executeQuery(
     model: opts.model,
     cwd: config.workspace,
     ...(run.sessionId ? { resume: run.sessionId } : {}),
-    // sandboxed container: allow file edits + bash freely (§6)
-    permissionMode: "acceptEdits",
+    permissionMode: "bypassPermissions",
+    allowDangerouslySkipPermissions: true,
+    // belt and braces for anything the SDK still routes through a prompt
     canUseTool: async (_tool, toolInput): Promise<PermissionResult> => ({
       behavior: "allow",
       updatedInput: toolInput,
@@ -219,8 +220,8 @@ async function executeQuery(
             playwright: {
               type: "stdio" as const,
               command: "npx",
-              // --no-sandbox: the container drops all capabilities (§11), so
-              // Chromium's own sandbox cannot start — the container is the boundary
+              // --no-sandbox: Chromium's own sandbox needs privileges Docker's
+              // default profile withholds — the container is the boundary (§11)
               args: ["@playwright/mcp", "--headless", "--isolated", "--no-sandbox"],
             },
           }
@@ -320,14 +321,18 @@ async function executeQuery(
           cacheCreationTokens: usageBase.cacheCreationTokens + current.cacheCreationTokens,
         });
 
+        // interrupt() aborts the in-flight turn, which the SDK reports as an
+        // error_during_execution result (e.g. a tool_use left without its
+        // result) — that's the pause/stop landing, not a failure. Drain and
+        // let the interrupted branch below return paused/stopped.
+        if (interrupted) continue;
+
         if (message.subtype !== "success") {
           const errText = message.errors.join("\n") || message.subtype;
           const limit = detectRateLimit(errText);
           if (limit) return { kind: "rate-limited", resetsAt: limit, sessionId };
           throw new AgentError(`agent run failed (${message.subtype}): ${errText.slice(0, 1000)}`);
         }
-
-        if (interrupted) continue; // drain
 
         // steering that arrived while the turn was finishing gets its own turn
         if (sync.hasPendingSteering()) continue;
@@ -368,7 +373,9 @@ async function executeQuery(
 function forwardAssistantLogs(sync: Syncer, message: SDKAssistantMessage, ref: string): void {
   for (const block of message.message.content) {
     if (block.type === "text" && block.text.trim()) {
-      sync.log("info", block.text.trim().slice(0, 400), ref);
+      sync.log("info", block.text.trim().slice(0, 400), ref, "assistant");
+    } else if (block.type === "thinking" && block.thinking.trim()) {
+      sync.log("info", block.thinking.trim().slice(0, 400), ref, "thinking");
     } else if (block.type === "tool_use") {
       sync.log("debug", `→ ${block.name}`, ref);
     }

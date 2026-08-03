@@ -30,6 +30,9 @@ export const EVENT_PAYLOAD_SCHEMAS = {
   LOG: z.object({
     level: z.enum(["debug", "info", "warn", "error"]),
     line: z.string().max(500),
+    // set on the model's own output so the UI can surface it in the highlights
+    // feed: "assistant" = response text, "thinking" = extended thinking
+    source: z.enum(["assistant", "thinking"]).optional(),
   }),
   ERROR: z.object({
     code: z.string(),
@@ -204,7 +207,7 @@ export const TaskMetaSchema = z.object({
     runCommand: z.string(),
     runReadyUrl: z.string().nullable(),
     migrateCommand: z.string().nullable(),
-    testCommand: z.string(),
+    testCommand: z.string().nullable(),
     coverageFormat: z.enum([
       "COBERTURA_XML",
       "LCOV",

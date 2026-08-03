@@ -2,7 +2,7 @@
 
 Everything the code can't do for you. Work top to bottom; each section says what
 it produces (usually a value for `deploy/.env`). At the end you'll have Waypoint
-live at `https://waypoint.ergh.co`.
+live at `[MY_URL]`.
 
 The initial Prisma migration is already committed (`packages/core/prisma/migrations/`),
 and the database seeds itself on first boot — there are no manual DB steps.
@@ -18,7 +18,7 @@ and the database seeds itself on first boot — there are no manual DB steps.
 | 1.3 | Claude Max OAuth token (`claude setup-token`)    | `CLAUDE_CODE_OAUTH_TOKEN`                  |
 | 1.4 | Anthropic API key (models list only)             | `ANTHROPIC_API_KEY`                        |
 | 1.5 | GitHub PAT (repo scope)                          | `GITHUB_DEFAULT_PAT`                       |
-| 1.6 | Hetzner VPS (~20 GB RAM) + Object Storage bucket | host + `LITESTREAM_*`                      |
+| 1.6 | VPS (~20 GB RAM) + Object Storage bucket | host + `LITESTREAM_*`                      |
 | 1.7 | Two generated secrets (`openssl rand …`)         | `AUTH_SECRET`, `MASTER_ENCRYPTION_KEY`     |
 
 Details for each below.
@@ -27,7 +27,7 @@ Details for each below.
 
 ## 2. GitHub repository & CI
 
-1. Create the GitHub repo (e.g. `ericghildyal/waypoint`) and push this codebase to `main`.
+1. Create the GitHub repo (e.g. `[me]/waypoint`) and push this codebase to `main`.
 2. GitHub Actions builds three images to GHCR on every push to `main`
    (`waypoint-web`, `waypoint-orchestrator`, `waypoint-runner`) — no setup
    needed beyond the push (it uses the built-in `GITHUB_TOKEN`).
@@ -78,17 +78,17 @@ Also add the public half of `VPS_SSH_KEY` (step 2.4) to `~/.ssh/authorized_keys`
 
 ---
 
-## 4. DNS for `waypoint.ergh.co` (all records on the `ergh.co` zone)
+## 4. DNS for `[MY_DOMAIN]`
 
-The app, email **send**, and email **receive** all live on `waypoint.ergh.co` —
+The app, email **send**, and email **receive** all live on `waypoint.[MY_DOMAIN]` —
 an MX record coexists fine with the A record on the same host (§8).
 
 | Type            | Name                                        | Value                                                                                                | Purpose                                                             |
 | --------------- | ------------------------------------------- | ---------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
 | A               | `waypoint`                                  | `<VPS IP>`                                                                                           | the app; Caddy auto-provisions TLS once this resolves               |
-| TXT + CNAME/TXT | _(exact records from the Resend dashboard)_ | DKIM + SPF                                                                                           | verify `waypoint.ergh.co` as a Resend **sending** domain (step 5.2) |
+| TXT + CNAME/TXT | _(exact records from the Resend dashboard)_ | DKIM + SPF                                                                                           | verify `waypoint.[MY_DOMAIN]` as a Resend **sending** domain (step 5.2) |
 | MX              | `waypoint`                                  | _(Resend's inbound server, exact value from the dashboard — e.g. `inbound.resend.com`, priority 10)_ | reply-by-email → Resend inbound (step 5.3)                          |
-| TXT             | `_dmarc.waypoint`                           | `v=DMARC1; p=none; rua=mailto:ericghildyal@gmail.com`                                                | optional, deliverability                                            |
+| TXT             | `_dmarc.waypoint`                           | `v=DMARC1; p=none; rua=mailto:[me@email.com]`                                                | optional, deliverability                                            |
 
 ⚠️ Caddy can only obtain the certificate after the A record propagates — create
 it before the first deploy.
@@ -98,16 +98,16 @@ it before the first deploy.
 ## 5. Resend (outbound + inbound email)
 
 1. **API key** — resend.com → API Keys → create → `RESEND_API_KEY`.
-2. **Verify the sending domain** — Domains → Add Domain → `waypoint.ergh.co`.
+2. **Verify the sending domain** — Domains → Add Domain → `waypoint.[MY_DOMAIN]`.
    Resend shows the exact DKIM/SPF records; add them to DNS (step 4) and wait
-   for "Verified". The sender address is `waypoint@waypoint.ergh.co`
+   for "Verified". The sender address is `waypoint@waypoint.[MY_DOMAIN]`
    (`EMAIL_FROM`).
-3. **Inbound email** — enable receiving for `waypoint.ergh.co` (Resend →
+3. **Inbound email** — enable receiving for `waypoint.[MY_DOMAIN]` (Resend →
    Domains → your domain → Receiving, or the Inbound section). Add the **MX
    record** it shows (step 4). Question reply-to addresses look like
-   `q-<questionId>@waypoint.ergh.co` (`INBOUND_DOMAIN=waypoint.ergh.co`).
+   `q-<questionId>@waypoint.[MY_DOMAIN]` (`INBOUND_DOMAIN=waypoint.[MY_DOMAIN]`).
 4. **Inbound webhook** — Webhooks → Add Endpoint:
-   - URL: `https://waypoint.ergh.co/api/webhooks/resend`
+   - URL: `https://waypoint.[MY_DOMAIN]/api/webhooks/resend`
    - Event: the inbound "email received" event
    - Copy the **signing secret** (starts `whsec_`) → `RESEND_WEBHOOK_SECRET`.
      (The endpoint verifies Svix signatures; unsigned calls are rejected.)
@@ -125,8 +125,8 @@ it before the first deploy.
    account can sign in — Waypoint's own allowlist still gates access).
 3. APIs & Services → Credentials → Create Credentials → OAuth client ID →
    **Web application**:
-   - Authorized JavaScript origin: `https://waypoint.ergh.co`
-   - Authorized redirect URI: `https://waypoint.ergh.co/api/auth/callback/google`
+   - Authorized JavaScript origin: `https://waypoint.[MY_DOMAIN]`
+   - Authorized redirect URI: `https://waypoint.[MY_DOMAIN]/api/auth/callback/google`
 4. Copy the client ID/secret → `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`.
 
 **Produces:** Google sign-in for allowlisted emails (allowlist seeds from
@@ -211,9 +211,9 @@ stored secret (they'd need re-entering).
 
 ### Post-deploy smoke checklist
 
-- [ ] `https://waypoint.ergh.co` redirects to `/signin`; Google sign-in works
+- [ ] `https://waypoint.[MY_DOMAIN]` redirects to `/signin`; Google sign-in works
       for your allowlisted email; any other Google account is rejected.
-- [ ] `https://waypoint.ergh.co/api/health` returns **404** (Caddy doesn't
+- [ ] `https://waypoint.[MY_DOMAIN]/api/health` returns **404** (Caddy doesn't
       proxy it — internal only).
 - [ ] Settings shows Claude token + GitHub PAT as **set**; "Refresh models"
       returns a model list.
@@ -294,15 +294,15 @@ base). `make doctor` reports what's missing.
 
 | Var                                         | Source                            |
 | ------------------------------------------- | --------------------------------- |
-| `APP_URL`, `AUTH_URL`                       | fixed: `https://waypoint.ergh.co` |
+| `APP_URL`, `AUTH_URL`                       | fixed: `https://waypoint.[MY_DOMAIN]` |
 | `AUTH_SECRET`                               | step 9                            |
 | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | step 6                            |
 | `MASTER_ENCRYPTION_KEY`                     | step 9                            |
 | `SEED_ALLOWED_EMAILS`                       | your email(s)                     |
 | `RESEND_API_KEY`                            | step 5.1                          |
 | `RESEND_WEBHOOK_SECRET`                     | step 5.4                          |
-| `EMAIL_FROM`                                | `waypoint@waypoint.ergh.co`       |
-| `INBOUND_DOMAIN`                            | `waypoint.ergh.co`                |
+| `EMAIL_FROM`                                | `waypoint@waypoint.[MY_DOMAIN]`       |
+| `INBOUND_DOMAIN`                            | `waypoint.[MY_DOMAIN]`                |
 | `CLAUDE_CODE_OAUTH_TOKEN`                   | step 7.1 (`claude setup-token`)   |
 | `ANTHROPIC_API_KEY`                         | step 7.2                          |
 | `GITHUB_DEFAULT_PAT`                        | step 8                            |

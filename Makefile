@@ -201,8 +201,10 @@ $(ENV_FILE):
 		# --- optional: fill in to exercise the full pipeline ------------------
 		# \`claude setup-token\` — seeds the global CLAUDE_CODE_OAUTH_TOKEN secret
 		CLAUDE_CODE_OAUTH_TOKEN=
-		# only used by Settings → "Refresh models"
-		ANTHROPIC_API_KEY=
+		# only used by Settings → "Refresh models". NOT named ANTHROPIC_API_KEY
+		# so the Claude Code SDK doesn't pick it up and bill agent runs to it
+		# instead of the Max subscription OAuth token above.
+		MODEL_LOOKUP_ANTHROPIC_API_KEY=
 		# seeds the global GIT_PAT secret (clone/push/PR on your repos)
 		GITHUB_DEFAULT_PAT=
 		# leave empty to disable outbound email locally

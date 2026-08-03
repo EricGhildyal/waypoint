@@ -30,6 +30,7 @@ import {
   formatTokens,
   swrFetcher,
 } from "@/lib/format";
+import type { ChecklistItem } from "@waypoint/core";
 import type { QuestionView, TaskDetail } from "@/lib/task-detail";
 
 interface FeedEvent {
@@ -41,6 +42,31 @@ interface FeedEvent {
 }
 
 const PIPELINE_STAGES = ["PLANNING", "IMPLEMENTATION", "REVIEW", "TESTING", "PR"] as const;
+
+// The feed shows pipeline-level highlights plus the model's own narration
+// (LOG lines tagged source: assistant/thinking); tool-call and command spam
+// (untagged LOG debug/info, TOKEN_UPDATE) stays in the stage transcripts.
+// CHECKLIST_UPDATE is omitted because the checklist is always visible beside
+// the feed.
+const HIGHLIGHT_TYPES = new Set([
+  "STATUS_CHANGE",
+  "STAGE_START",
+  "STAGE_END",
+  "QUESTION",
+  "ANSWER",
+  "STEER",
+  "ERROR",
+  "REVIEW_FINDINGS",
+  "TEST_FINDINGS",
+  "PR_OPENED",
+]);
+
+function isHighlight(event: FeedEvent): boolean {
+  if (HIGHLIGHT_TYPES.has(event.type)) return true;
+  if (event.type !== "LOG") return false;
+  const { source, level } = event.payload;
+  return source === "assistant" || source === "thinking" || level === "warn" || level === "error";
+}
 
 export function TaskDetailView({ initial, focus }: { initial: TaskDetail; focus: string | null }) {
   const { mutate } = useSWRConfig();
@@ -63,8 +89,12 @@ export function TaskDetailView({ initial, focus }: { initial: TaskDetail; focus:
         );
         if (stop) return;
         if (res.events.length) {
-          setEvents((prev) => [...prev, ...res.events].slice(-1000));
+          // advance the cursor past filtered-out events too, or they'd refetch forever
           cursorRef.current = res.cursor;
+          const highlights = res.events.filter(isHighlight);
+          if (highlights.length) {
+            setEvents((prev) => [...prev, ...highlights].slice(-1000));
+          }
         }
       } catch {
         /* transient poll error */
@@ -190,7 +220,6 @@ export function TaskDetailView({ initial, focus }: { initial: TaskDetail; focus:
         tabs={[
           { key: "activity", label: "Activity" },
           { key: "plan", label: "Plan" },
-          { key: "checklist", label: "Checklist" },
           { key: "questions", label: "Questions", badge: openQuestions.length },
           { key: "usage", label: "Usage" },
           { key: "findings", label: "Findings" },
@@ -199,7 +228,6 @@ export function TaskDetailView({ initial, focus }: { initial: TaskDetail; focus:
 
       {tab === "activity" ? <ActivityTab task={task} events={events} onSteer={action} /> : null}
       {tab === "plan" ? <PlanTab task={task} /> : null}
-      {tab === "checklist" ? <ChecklistTab task={task} /> : null}
       {tab === "questions" ? <QuestionsTab task={task} focus={focus} /> : null}
       {tab === "usage" ? <UsageTab task={task} /> : null}
       {tab === "findings" ? <FindingsTab task={task} /> : null}
@@ -324,36 +352,41 @@ function ActivityTab({
   const active = !["DONE", "CANCELLED", "FAILED"].includes(task.status);
 
   return (
-    <div className="space-y-3">
-      <div
-        ref={feedRef}
-        className="feed-scroll h-96 space-y-1 overflow-y-auto rounded-xl border border-zinc-800 bg-zinc-950 p-3 font-mono text-xs"
-      >
-        {events.length === 0 ? (
-          <p className="text-zinc-600">No events yet…</p>
-        ) : (
-          events.map((e) => <EventLine key={e.id} event={e} />)
-        )}
+    // checklist first in DOM: collapsed summary on top for mobile, and
+    // flex-row-reverse pins it to the right on desktop
+    <div className="flex flex-col gap-3 lg:flex-row-reverse">
+      <ChecklistPanel items={task.checklist ?? []} />
+      <div className="min-w-0 flex-1 space-y-3">
+        <div
+          ref={feedRef}
+          className="feed-scroll h-96 space-y-1 overflow-y-auto rounded-xl border border-zinc-800 bg-zinc-950 p-3 font-mono text-xs"
+        >
+          {events.length === 0 ? (
+            <p className="text-zinc-600">No highlights yet…</p>
+          ) : (
+            events.map((e) => <EventLine key={e.id} event={e} />)
+          )}
+        </div>
+        {task.stageRuns.length ? (
+          <p className="text-xs text-zinc-500">
+            Full transcripts:{" "}
+            {task.stageRuns.map((r, i) => (
+              <span key={r.id}>
+                {i > 0 ? " · " : ""}
+                <a
+                  className="text-indigo-400 hover:underline"
+                  href={`/api/tasks/${task.id}/transcript/${r.id}`}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  {STAGE_LABELS[r.stage] ?? r.stage} #{r.attempt}
+                </a>
+              </span>
+            ))}
+          </p>
+        ) : null}
+        {active ? <SteerForm onSteer={onSteer} /> : null}
       </div>
-      {task.stageRuns.length ? (
-        <p className="text-xs text-zinc-500">
-          Full transcripts:{" "}
-          {task.stageRuns.map((r, i) => (
-            <span key={r.id}>
-              {i > 0 ? " · " : ""}
-              <a
-                className="text-indigo-400 hover:underline"
-                href={`/api/tasks/${task.id}/transcript/${r.id}`}
-                target="_blank"
-                rel="noreferrer"
-              >
-                {STAGE_LABELS[r.stage] ?? r.stage} #{r.attempt}
-              </a>
-            </span>
-          ))}
-        </p>
-      ) : null}
-      {active ? <SteerForm onSteer={onSteer} /> : null}
     </div>
   );
 }
@@ -407,25 +440,20 @@ function EventLine({ event }: { event: FeedEvent }) {
   let text: string;
   switch (event.type) {
     case "STATUS_CHANGE":
-      text = `${p.from} → ${p.to}${p.reason ? ` (${p.reason})` : ""}`;
+      text = `${STATUS_LABELS[String(p.from)] ?? p.from} → ${STATUS_LABELS[String(p.to)] ?? p.to}${p.reason ? ` (${p.reason})` : ""}`;
       break;
     case "STAGE_START":
-      text = `stage ${p.stage} #${p.attempt} started (${p.model})`;
+      text = `${STAGE_LABELS[String(p.stage)] ?? p.stage} #${p.attempt} started (${p.model})`;
       break;
     case "STAGE_END":
-      text = `stage ${p.stage} #${p.attempt} ended: ${p.status}`;
+      text = `${STAGE_LABELS[String(p.stage)] ?? p.stage} #${p.attempt} ended: ${p.status}`;
       break;
     case "LOG":
-      text = String(p.line ?? "");
+      // only assistant/thinking narration and warn/error lines pass the filter
+      text = `${p.source === "thinking" ? "💭 " : ""}${String(p.line ?? "")}`;
       break;
     case "ERROR":
       text = `${p.code}: ${p.message}`;
-      break;
-    case "CHECKLIST_UPDATE":
-      text = `checklist updated (${Array.isArray(p.items) ? p.items.length : 0} items)`;
-      break;
-    case "TOKEN_UPDATE":
-      text = `tokens: in ${p.inputTokens} out ${p.outputTokens}`;
       break;
     case "REVIEW_FINDINGS":
     case "TEST_FINDINGS":
@@ -446,14 +474,25 @@ function EventLine({ event }: { event: FeedEvent }) {
     default:
       text = JSON.stringify(p);
   }
+  const style = event.type === "LOG" ? logStyle(p) : (EVENT_STYLES[event.type] ?? "text-zinc-400");
+  // narration is prose — wrap on word boundaries; everything else stays break-all
+  const isProse = event.type === "LOG" && (p.source === "assistant" || p.source === "thinking");
   return (
     <div className="flex gap-2">
       <span className="shrink-0 text-zinc-600">
         {new Date(event.createdAt).toLocaleTimeString(undefined, { hour12: false })}
       </span>
-      <span className={clsx("break-all", EVENT_STYLES[event.type] ?? "text-zinc-400")}>{text}</span>
+      <span className={clsx(isProse ? "whitespace-pre-wrap wrap-break-word" : "break-all", style)}>
+        {text}
+      </span>
     </div>
   );
+}
+
+function logStyle(p: Record<string, unknown>): string {
+  if (p.source === "thinking") return "italic text-zinc-500";
+  if (p.source === "assistant") return "text-zinc-200";
+  return p.level === "error" ? "text-red-400" : "text-yellow-300";
 }
 
 const RevisionSchema = Yup.object({
@@ -555,35 +594,66 @@ function PlanTab({ task }: { task: TaskDetail }) {
   );
 }
 
-function ChecklistTab({ task }: { task: TaskDetail }) {
-  if (!task.checklist?.length) {
-    return (
-      <Card>
-        <p className="text-sm text-zinc-500">No checklist yet.</p>
+/**
+ * The checklist rides alongside the activity feed instead of hiding in its own
+ * tab: a pinned card on desktop, a collapsible progress summary above the feed
+ * on mobile.
+ */
+function ChecklistPanel({ items }: { items: ChecklistItem[] }) {
+  const done = items.filter((i) => i.state === "completed").length;
+  return (
+    <aside className="lg:w-72 lg:shrink-0">
+      <details className="rounded-xl border border-zinc-800 bg-zinc-900/50 lg:hidden">
+        <summary className="cursor-pointer select-none px-4 py-3 text-sm font-semibold text-zinc-200">
+          Checklist{" "}
+          <span className="font-normal text-zinc-500">
+            · {items.length ? `${done}/${items.length} done` : "none yet"}
+          </span>
+        </summary>
+        <div className="border-t border-zinc-800 p-4">
+          <ChecklistItems items={items} />
+        </div>
+      </details>
+      <Card className="hidden lg:block lg:sticky lg:top-4">
+        <div className="mb-3 flex items-baseline justify-between">
+          <Subheading>Checklist</Subheading>
+          {items.length ? (
+            <span className="text-xs tabular-nums text-zinc-500">
+              {done}/{items.length}
+            </span>
+          ) : null}
+        </div>
+        <div className="feed-scroll max-h-96 overflow-y-auto">
+          <ChecklistItems items={items} />
+        </div>
       </Card>
-    );
+    </aside>
+  );
+}
+
+function ChecklistItems({ items }: { items: ChecklistItem[] }) {
+  if (!items.length) {
+    return <p className="text-sm text-zinc-500">No checklist yet.</p>;
   }
   return (
-    <Card>
-      <ul className="space-y-1.5">
-        {task.checklist.map((item) => (
-          <li key={item.text} className="flex items-start gap-2 text-sm">
-            <span className="mt-0.5">
-              {item.state === "completed" ? "✅" : item.state === "in_progress" ? "🔄" : "⬜"}
-            </span>
-            <span
-              className={clsx(
-                item.state === "completed" && "text-zinc-500 line-through",
-                item.state === "in_progress" && "text-zinc-100",
-                item.state === "pending" && "text-zinc-400",
-              )}
-            >
-              {item.text}
-            </span>
-          </li>
-        ))}
-      </ul>
-    </Card>
+    <ul className="space-y-1.5">
+      {items.map((item) => (
+        <li key={item.text} className="flex items-start gap-2 text-sm">
+          <span className="mt-0.5">
+            {item.state === "completed" ? "✅" : item.state === "in_progress" ? "🔄" : "⬜"}
+          </span>
+          <span
+            className={clsx(
+              item.state === "completed" && "text-zinc-500 line-through",
+              item.state === "in_progress" && "text-zinc-100",
+              item.state === "pending" && "text-zinc-400",
+            )}
+          >
+            {item.text}
+          </span>
+        </li>
+      ))}
+    </ul>
   );
 }
 

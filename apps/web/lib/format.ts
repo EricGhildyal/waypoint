@@ -9,7 +9,7 @@ export const STATUS_COLORS: Record<string, BadgeColor> = {
   IMPLEMENTING: "sky",
   REVIEWING: "indigo",
   TESTING: "cyan",
-  NEEDS_INPUT: "red",
+  NEEDS_INPUT: "purple",
   PAUSED: "amber",
   RATE_LIMITED: "orange",
   OPENING_PR: "teal",

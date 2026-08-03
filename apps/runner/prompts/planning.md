@@ -28,5 +28,5 @@ Explore the repository as deeply as you need to and produce an implementation pl
 ## Working style
 
 - Asking a question costs seconds; a wrong direction costs the user's precious tokens. When uncertain about intent, scope, tradeoffs, or data, use the `ask_user` tool, never guess.
-- Note that tests must reach {{COVERAGE_BAR}}% changed-line coverage (test command: `{{TEST_COMMAND}}`) — plan the test work accordingly.
+- {{PLAN_TEST_NOTE}}
 - When the plan file is written, stop. The user reviews and approves every plan before implementation begins.

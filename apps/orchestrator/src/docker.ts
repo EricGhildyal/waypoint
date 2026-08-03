@@ -141,10 +141,6 @@ async function createTaskContainer(
       NetworkMode: env.tasksNetwork,
       Memory: Math.round(memGb * 1024 ** 3),
       NanoCpus: Math.round(cpus * 1e9),
-      // blast radius (§11): no-new-privileges + dropped capabilities. Chromium
-      // runs sandbox-less inside this boundary (the container IS the sandbox).
-      SecurityOpt: ["no-new-privileges:true"],
-      CapDrop: ["ALL"],
       RestartPolicy: { Name: "no" },
     },
   });

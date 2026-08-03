@@ -37,7 +37,7 @@ export interface ProjectFormData {
   runCommand: string;
   runReadyUrl: string | null;
   migrateCommand: string | null;
-  testCommand: string;
+  testCommand: string | null;
   coverageFormat: string;
   coverageReportPath: string;
   lintCommand: string | null;
@@ -77,21 +77,31 @@ const ProjectSchema = Yup.object({
   runCommand: Yup.string().trim().required("Run command is required"),
   runReadyUrl: urlOrLocalhost("Must be a URL").nullable().transform(emptyToNull),
   migrateCommand: Yup.string().nullable(),
-  testCommand: Yup.string().trim().required("Test command is required"),
+  testCommand: Yup.string().nullable(),
   coverageFormat: Yup.string()
     .oneOf([...COVERAGE_FORMATS])
     .required(),
-  coverageReportPath: Yup.string().trim().required("Required"),
+  // Coverage fields only matter when there's a test command; blank otherwise.
+  coverageReportPath: Yup.string()
+    .trim()
+    .when("testCommand", {
+      is: (v?: string) => !!v?.trim(),
+      then: (s) => s.required("Required"),
+    }),
   lintCommand: Yup.string().nullable(),
   formatCommand: Yup.string().nullable(),
   dockerfilePath: Yup.string().nullable(),
   instructions: Yup.string(),
-  coverageBar: Yup.number()
-    .typeError("0–100")
-    .integer("Whole percent")
-    .min(0, "0–100")
-    .max(100, "0–100")
-    .required("Required"),
+  coverageBar: Yup.string().when("testCommand", {
+    is: (v?: string) => !!v?.trim(),
+    then: () =>
+      Yup.number()
+        .typeError("0–100")
+        .integer("Whole percent")
+        .min(0, "0–100")
+        .max(100, "0–100")
+        .required("Required"),
+  }),
 });
 
 function toValues(existing?: ProjectFormData): ProjectValues {
@@ -143,14 +153,16 @@ export function ProjectForm({
         runCommand: values.runCommand.trim(),
         runReadyUrl: values.runReadyUrl.trim() || null,
         migrateCommand: values.migrateCommand.trim() || null,
-        testCommand: values.testCommand.trim(),
+        testCommand: values.testCommand.trim() || null,
         coverageFormat: values.coverageFormat,
-        coverageReportPath: values.coverageReportPath.trim(),
+        // Blank coverage fields only pass validation with no test command;
+        // fall back to the schema defaults since the values are unused then.
+        coverageReportPath: values.coverageReportPath.trim() || "coverage/lcov.info",
         lintCommand: values.lintCommand.trim() || null,
         formatCommand: values.formatCommand.trim() || null,
         dockerfilePath: values.dockerfilePath.trim() || null,
         instructions: values.instructions,
-        coverageBar: Number(values.coverageBar),
+        coverageBar: values.coverageBar.trim() === "" ? 100 : Number(values.coverageBar),
       };
       try {
         if (isNew) {
@@ -203,6 +215,8 @@ export function ProjectForm({
     }
   }
 
+  const noTests = !formik.values.testCommand.trim();
+
   return (
     <div className="mx-auto max-w-2xl space-y-4">
       <div className={clsx("flex items-center", headerless ? "justify-end" : "justify-between")}>
@@ -253,12 +267,15 @@ export function ProjectForm({
             <Field label="Migrate command (optional)">
               <Input {...formik.getFieldProps("migrateCommand")} />
             </Field>
-            <Field label="Test command" hint="Must emit a coverage report">
+            <Field
+              label="Test command (optional)"
+              hint="Must emit a coverage report — leave blank to skip the test + coverage gate"
+            >
               <Input {...formik.getFieldProps("testCommand")} />
               <ErrorText>{fieldError(formik, "testCommand")}</ErrorText>
             </Field>
             <Field label="Coverage format">
-              <Select {...formik.getFieldProps("coverageFormat")}>
+              <Select disabled={noTests} {...formik.getFieldProps("coverageFormat")}>
                 {COVERAGE_FORMATS.map((f) => (
                   <option key={f} value={f}>
                     {f}
@@ -267,11 +284,17 @@ export function ProjectForm({
               </Select>
             </Field>
             <Field label="Coverage report path">
-              <Input {...formik.getFieldProps("coverageReportPath")} />
+              <Input disabled={noTests} {...formik.getFieldProps("coverageReportPath")} />
               <ErrorText>{fieldError(formik, "coverageReportPath")}</ErrorText>
             </Field>
             <Field label="Coverage bar (% of changed lines)">
-              <Input type="number" min={0} max={100} {...formik.getFieldProps("coverageBar")} />
+              <Input
+                type="number"
+                min={0}
+                max={100}
+                disabled={noTests}
+                {...formik.getFieldProps("coverageBar")}
+              />
               <ErrorText>{fieldError(formik, "coverageBar")}</ErrorText>
             </Field>
             <Field
@@ -422,7 +445,7 @@ function SecretsManager({ projectId, initial }: { projectId: string; initial: st
           <ErrorText>{fieldError(addForm, "key")}</ErrorText>
         </Field>
         <Field label="Value" className="flex-1">
-          <Input type="password" autoComplete="off" {...addForm.getFieldProps("value")} />
+          <Input type="text" autoComplete="off" {...addForm.getFieldProps("value")} />
           <ErrorText>{fieldError(addForm, "value")}</ErrorText>
         </Field>
         <Button type="submit" variant="outline" className="mt-5" loading={addForm.isSubmitting}>
@@ -459,7 +482,7 @@ function RotateSecretForm({ onRotate }: { onRotate: (value: string) => Promise<v
   return (
     <form onSubmit={formik.handleSubmit} noValidate className="flex items-center gap-1">
       <Input
-        type="password"
+        type="text"
         className="w-40"
         autoComplete="off"
         placeholder="New value"

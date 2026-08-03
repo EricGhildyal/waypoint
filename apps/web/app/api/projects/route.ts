@@ -12,7 +12,7 @@ export const ProjectBodySchema = z.object({
   runCommand: z.string().min(1),
   runReadyUrl: z.string().url().nullable().optional(),
   migrateCommand: z.string().nullable().optional(),
-  testCommand: z.string().min(1),
+  testCommand: z.string().nullable().optional(),
   coverageFormat: z
     .enum(["COBERTURA_XML", "LCOV", "CLOVER_XML", "JACOCO_XML", "GO_COVERPROFILE"])
     .default("LCOV"),
@@ -55,6 +55,7 @@ export async function POST(req: NextRequest) {
         ...body,
         runReadyUrl: body.runReadyUrl ?? null,
         migrateCommand: body.migrateCommand ?? null,
+        testCommand: body.testCommand ?? null,
         lintCommand: body.lintCommand ?? null,
         formatCommand: body.formatCommand ?? null,
         dockerfilePath: body.dockerfilePath ?? null,

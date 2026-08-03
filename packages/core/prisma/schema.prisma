@@ -116,7 +116,7 @@ model Project {
   runCommand         String // starts app for the testing stage
   runReadyUrl        String? // URL polled to detect app is up, e.g. http://localhost:3000
   migrateCommand     String?
-  testCommand        String // must emit coverage report
+  testCommand        String? // must emit coverage report; null = no test/coverage gate
   coverageFormat     CoverageFormat @default(LCOV)
   coverageReportPath String         @default("coverage/lcov.info")
   lintCommand        String?
