@@ -1,10 +1,14 @@
 /**
  * Deterministic fixtures for the e2e suite.
  *
- * Creates one project and three tasks pinned to the UI states the specs need:
+ * Creates one project and a task pinned to each UI state the specs need:
  *   e2e-steer      IMPLEMENTING            -> Activity tab renders the Steer form
  *   e2e-question   NEEDS_INPUT + question  -> Questions tab renders the answer form
  *   e2e-plan       AWAITING_PLAN_APPROVAL  -> Plan tab renders Approve / Request changes
+ *   e2e-options    NEEDS_INPUT + options   -> segmented options above the Send form
+ *   e2e-prompt     IMPLEMENTING            -> long markdown-ish prompt for the Prompt panel
+ *   e2e-blank      PAUSED                  -> whitespace-only prompt, Prompt panel empty state
+ *   e2e-failed     FAILED                  -> Retry dialog beside the Prompt panel
  *
  * Idempotent: re-running deletes and recreates the fixture tasks. Task ids are
  * fixed so specs can navigate straight to /tasks/{id} without discovery.
@@ -17,7 +21,7 @@
 import { promises as fs } from "node:fs";
 import { artifactDir, artifactPath } from "@waypoint/core";
 import { db } from "@waypoint/core/db";
-import { FIXTURES } from "./ids";
+import { FIXTURES, PROMPT_FIXTURE_TEXT } from "./ids";
 
 const MODELS = {
   planningModel: "claude-fable-5",
@@ -50,6 +54,9 @@ async function main() {
     FIXTURES.questionTaskId,
     FIXTURES.planTaskId,
     FIXTURES.optionsTaskId,
+    FIXTURES.promptTaskId,
+    FIXTURES.blankPromptTaskId,
+    FIXTURES.failedTaskId,
   ];
   await db.task.deleteMany({ where: { id: { in: ids } } });
 
@@ -183,6 +190,61 @@ async function main() {
       contextSummary: "Fixture multiple-choice question for the e2e suite.",
       options: ["Yes", "No"],
       status: "OPEN",
+    },
+  });
+
+  // 5. multi-line markdown-ish prompt -> read-only Prompt panel rendering
+  await db.task.create({
+    data: {
+      id: FIXTURES.promptTaskId,
+      projectId: project.id,
+      createdById: user.id,
+      title: "E2E — prompt panel rendering",
+      prompt: PROMPT_FIXTURE_TEXT,
+      difficulty: "EASY",
+      status: "IMPLEMENTING",
+      currentStage: "IMPLEMENTATION",
+      ...MODELS,
+      stageRuns: {
+        create: {
+          stage: "IMPLEMENTATION",
+          attempt: 1,
+          model: MODELS.implementationModel,
+          status: "RUNNING",
+        },
+      },
+    },
+  });
+
+  // 6. whitespace-only prompt -> the Prompt panel's empty branch
+  await db.task.create({
+    data: {
+      id: FIXTURES.blankPromptTaskId,
+      projectId: project.id,
+      createdById: user.id,
+      title: "E2E — blank prompt",
+      prompt: "   \n  ",
+      difficulty: "EASY",
+      // PAUSED, not QUEUED: a queued fixture would be picked up by the orchestrator
+      status: "PAUSED",
+      currentStage: "PLANNING",
+      ...MODELS,
+    },
+  });
+
+  // 7. FAILED -> the Retry dialog (the other, editable, use of Task.prompt)
+  await db.task.create({
+    data: {
+      id: FIXTURES.failedTaskId,
+      projectId: project.id,
+      createdById: user.id,
+      title: "E2E — failed task",
+      prompt: "Fixture task parked in FAILED so the Retry dialog renders.",
+      difficulty: "EASY",
+      status: "FAILED",
+      failureCode: "GIT_CLONE",
+      currentStage: "PLANNING",
+      ...MODELS,
     },
   });
 

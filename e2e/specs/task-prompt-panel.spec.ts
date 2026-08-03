@@ -1,0 +1,290 @@
+import { expect, type Locator, type Page, test } from "@playwright/test";
+import { FIXTURES, PROMPT_FIXTURE_TEXT } from "../fixtures/ids";
+import { reseed } from "../fixtures/reseed";
+
+/**
+ * The task detail page shows the task's prompt in a read-only <details>
+ * disclosure sitting between the page header and the stage stepper.
+ *
+ * The contract this suite pins down:
+ *   - present on every task in every status, collapsed on first paint
+ *   - expands to the full prompt as PLAIN text (not markdown), line breaks kept
+ *   - genuinely read-only: no input, textarea or contenteditable inside it
+ *   - stays expanded across the page's 2.5s SWR polling and across tab switches
+ *   - long prompts scroll inside the panel instead of pushing the tabs down
+ *   - nothing overflows horizontally, including at 375px
+ */
+
+/**
+ * The Prompt disclosure. Scoped by its summary because the page renders a
+ * second <details> for the mobile checklist.
+ */
+function promptPanel(page: Page): Locator {
+  return page
+    .locator("details")
+    .filter({ has: page.locator("summary", { hasText: "Prompt" }) })
+    .first();
+}
+
+function promptSummary(page: Page): Locator {
+  return promptPanel(page).locator("> summary");
+}
+
+/** The rendered prompt paragraph inside the expanded panel. */
+function promptBody(page: Page): Locator {
+  return promptPanel(page).locator("> div p");
+}
+
+async function isOpen(page: Page): Promise<boolean> {
+  return await promptPanel(page).evaluate((d: HTMLDetailsElement) => d.open);
+}
+
+test.beforeEach(() => {
+  reseed();
+});
+
+test.describe("Prompt panel", () => {
+  test("is collapsed on first paint and sits between the header and the stepper", async ({
+    page,
+  }) => {
+    await page.goto(`/tasks/${FIXTURES.steerTaskId}`);
+
+    const panel = promptPanel(page);
+    await expect(panel).toBeVisible();
+    expect(await isOpen(page)).toBe(false);
+    await expect(promptBody(page)).toBeHidden();
+
+    // the disclosure is wedged between the header block and the stage stepper
+    const neighbours = await panel.evaluate((d) => ({
+      prev: d.previousElementSibling?.textContent ?? "",
+      next: d.nextElementSibling?.textContent ?? "",
+    }));
+    expect(neighbours.prev).toContain("E2E — steer form");
+    expect(neighbours.next).toContain("Planning");
+    expect(neighbours.next).toContain("Implementation");
+  });
+
+  test("expanding reveals the prompt, collapsing hides it again", async ({ page }) => {
+    await page.goto(`/tasks/${FIXTURES.steerTaskId}`);
+
+    await promptSummary(page).click();
+    await expect(promptBody(page)).toHaveText(
+      "Fixture task parked in IMPLEMENTING so the steer box renders.",
+    );
+
+    await promptSummary(page).click();
+    await expect(promptBody(page)).toBeHidden();
+  });
+
+  test("is keyboard operable", async ({ page }) => {
+    await page.goto(`/tasks/${FIXTURES.steerTaskId}`);
+
+    await promptSummary(page).focus();
+    await page.keyboard.press("Enter");
+    await expect(promptBody(page)).toBeVisible();
+  });
+
+  test("is read-only — no editable control anywhere inside it", async ({ page }) => {
+    await page.goto(`/tasks/${FIXTURES.steerTaskId}`);
+    await promptSummary(page).click();
+    await expect(promptBody(page)).toBeVisible();
+
+    const panel = promptPanel(page);
+    await expect(panel.locator("input, textarea, select, [contenteditable]")).toHaveCount(0);
+    await expect(panel.locator("button")).toHaveCount(0);
+    // the text itself is selectable so it can be copied
+    await expect(promptBody(page)).toHaveCSS("user-select", "auto");
+  });
+
+  test("renders the prompt as plain text, preserving line breaks and not parsing markdown", async ({
+    page,
+  }) => {
+    await page.goto(`/tasks/${FIXTURES.promptTaskId}`);
+    await promptSummary(page).click();
+
+    const body = promptBody(page);
+    await expect(body).toBeVisible();
+
+    // exact text, including the literal '#', '-' and '**' markdown characters
+    expect(await body.textContent()).toBe(PROMPT_FIXTURE_TEXT);
+
+    // no markdown was turned into elements — it is a single text node
+    expect(await body.evaluate((el) => el.childElementCount)).toBe(0);
+    await expect(body).toHaveCSS("white-space", "pre-wrap");
+  });
+
+  test("wraps a long unbroken token instead of scrolling the page sideways", async ({ page }) => {
+    await page.goto(`/tasks/${FIXTURES.promptTaskId}`);
+    await promptSummary(page).click();
+
+    const body = promptBody(page);
+    await expect(body).toBeVisible();
+    await expect(body).toHaveCSS("overflow-wrap", "break-word");
+
+    const overflow = await body.evaluate((el) => ({
+      x: el.scrollWidth > el.clientWidth,
+      page: document.documentElement.scrollWidth > document.documentElement.clientWidth,
+    }));
+    expect(overflow.x).toBe(false);
+    expect(overflow.page).toBe(false);
+  });
+
+  test("caps a long prompt at a scrollable region rather than pushing the tabs down", async ({
+    page,
+  }) => {
+    await page.goto(`/tasks/${FIXTURES.promptTaskId}`);
+    await promptSummary(page).click();
+
+    const body = promptBody(page);
+    await expect(body).toBeVisible();
+
+    const metrics = await body.evaluate((el) => ({
+      clientHeight: el.clientHeight,
+      scrollHeight: el.scrollHeight,
+      maxHeight: getComputedStyle(el).maxHeight,
+      overflowY: getComputedStyle(el).overflowY,
+    }));
+    // max-h-80 == 320px, and the content genuinely exceeds it
+    expect(metrics.maxHeight).toBe("320px");
+    expect(metrics.clientHeight).toBeLessThanOrEqual(320);
+    expect(metrics.scrollHeight).toBeGreaterThan(metrics.clientHeight);
+    expect(metrics.overflowY).toBe("auto");
+
+    // the tab bar is still reachable near the top of the page
+    const tabsTop = await page
+      .getByRole("button", { name: "Activity", exact: true })
+      .evaluate((el) => el.getBoundingClientRect().top);
+    expect(tabsTop).toBeLessThan(700);
+  });
+
+  test("stays expanded across the 2.5s polling re-renders", async ({ page }) => {
+    await page.goto(`/tasks/${FIXTURES.steerTaskId}`);
+    await promptSummary(page).click();
+    await expect(promptBody(page)).toBeVisible();
+
+    // count the SWR polls that land while the panel is open
+    let polls = 0;
+    page.on("response", (r) => {
+      if (new URL(r.url()).pathname === `/api/tasks/${FIXTURES.steerTaskId}`) polls += 1;
+    });
+
+    await page.waitForTimeout(9000);
+
+    expect(polls).toBeGreaterThanOrEqual(2);
+    expect(await isOpen(page)).toBe(true);
+    await expect(promptBody(page)).toBeVisible();
+  });
+
+  test("stays expanded, and above the tab bar, while switching tabs", async ({ page }) => {
+    await page.goto(`/tasks/${FIXTURES.steerTaskId}`);
+    await promptSummary(page).click();
+    await expect(promptBody(page)).toBeVisible();
+
+    for (const tab of ["Plan", "Questions", "Usage", "Findings", "Activity"]) {
+      await page.getByRole("button", { name: tab, exact: true }).click();
+
+      expect(await isOpen(page), `panel collapsed after opening the ${tab} tab`).toBe(true);
+      await expect(promptBody(page)).toBeVisible();
+
+      const [panelTop, tabsTop] = [
+        await promptPanel(page).evaluate((el) => el.getBoundingClientRect().top),
+        await page
+          .getByRole("button", { name: "Activity", exact: true })
+          .evaluate((el) => el.getBoundingClientRect().top),
+      ];
+      expect(panelTop, `panel dropped below the tab bar on the ${tab} tab`).toBeLessThan(tabsTop);
+    }
+  });
+
+  test("falls back to a placeholder when the prompt is blank", async ({ page }) => {
+    await page.goto(`/tasks/${FIXTURES.blankPromptTaskId}`);
+    await promptSummary(page).click();
+
+    await expect(promptPanel(page).locator("> div")).toHaveText("No prompt recorded.");
+  });
+
+  test("appears on every task status", async ({ page }) => {
+    const ids = [
+      FIXTURES.steerTaskId, // IMPLEMENTING
+      FIXTURES.questionTaskId, // NEEDS_INPUT
+      FIXTURES.planTaskId, // AWAITING_PLAN_APPROVAL
+      FIXTURES.optionsTaskId, // NEEDS_INPUT + options
+      FIXTURES.blankPromptTaskId, // PAUSED
+    ];
+
+    for (const id of ids) {
+      await page.goto(`/tasks/${id}`);
+      await expect(promptPanel(page), `no Prompt panel on /tasks/${id}`).toBeVisible();
+      expect(await isOpen(page), `panel started open on /tasks/${id}`).toBe(false);
+    }
+  });
+});
+
+test.describe("Prompt panel — narrow viewport", () => {
+  test.use({ viewport: { width: 375, height: 720 } });
+
+  test("nothing overflows at 375px, collapsed or expanded", async ({ page }) => {
+    for (const id of [FIXTURES.steerTaskId, FIXTURES.promptTaskId]) {
+      await page.goto(`/tasks/${id}`);
+      await expect(promptPanel(page)).toBeVisible();
+
+      expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(
+        375,
+      );
+
+      await promptSummary(page).click();
+      await expect(promptBody(page)).toBeVisible();
+
+      expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(
+        375,
+      );
+      expect(await promptBody(page).evaluate((el) => el.scrollWidth > el.clientWidth)).toBe(false);
+    }
+  });
+});
+
+test.describe("Prompt panel — FAILED task", () => {
+  const PROMPT = "Fixture task parked in FAILED so the Retry dialog renders.";
+
+  test("sits above the failure card and stays read-only beside the Retry textarea", async ({
+    page,
+  }) => {
+    await page.goto(`/tasks/${FIXTURES.failedTaskId}`);
+
+    const panel = promptPanel(page);
+    await expect(panel).toBeVisible();
+    expect(await isOpen(page)).toBe(false);
+
+    // header, then the Prompt panel, then the failure card
+    expect(await panel.evaluate((d) => d.nextElementSibling?.textContent ?? "")).toContain(
+      "GIT_CLONE",
+    );
+
+    await promptSummary(page).click();
+    await expect(promptBody(page)).toHaveText(PROMPT);
+
+    // opening Retry gives the page an editable prompt textarea — but not inside the panel
+    await page.getByRole("button", { name: "Retry" }).click();
+    const retryBox = page.locator("textarea");
+    await expect(retryBox).toHaveValue(PROMPT);
+    await expect(panel.locator("textarea")).toHaveCount(0);
+    expect(await isOpen(page)).toBe(true);
+  });
+
+  test("shows the revised prompt after a Retry edit", async ({ page }) => {
+    await page.goto(`/tasks/${FIXTURES.failedTaskId}`);
+    await promptSummary(page).click();
+    await expect(promptBody(page)).toHaveText(PROMPT);
+
+    await page.getByRole("button", { name: "Retry" }).click();
+    await page.locator("textarea").fill("EDITED VIA RETRY\nsecond line stays on its own line.");
+    await page.getByRole("button", { name: "Go", exact: true }).click();
+
+    // the panel picks the new prompt up on the next poll, without collapsing
+    await expect(promptBody(page)).toHaveText(
+      "EDITED VIA RETRY\nsecond line stays on its own line.",
+      { timeout: 15000 },
+    );
+    expect(await isOpen(page)).toBe(true);
+  });
+});
