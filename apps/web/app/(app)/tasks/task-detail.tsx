@@ -374,14 +374,13 @@ function SteerForm({ onSteer }: { onSteer: (name: string, prompt?: string) => Pr
   });
   return (
     <form onSubmit={formik.handleSubmit} noValidate>
-      <div className="flex items-end gap-2">
+      <div className="space-y-2">
         <Textarea
           rows={2}
-          className="flex-1"
           placeholder="Steer the agent mid-run — delivered on its next sync…"
           {...formik.getFieldProps("text")}
         />
-        <Button variant="primary" type="submit" loading={formik.isSubmitting}>
+        <Button className="w-full" variant="primary" type="submit" loading={formik.isSubmitting}>
           Steer
         </Button>
       </div>
@@ -530,6 +529,7 @@ function PlanTab({ task }: { task: TaskDetail }) {
             </div>
             <div className="flex gap-2">
               <Button
+                className="flex-1"
                 type="button"
                 variant="primary"
                 disabled={formik.isSubmitting}
@@ -538,7 +538,13 @@ function PlanTab({ task }: { task: TaskDetail }) {
               >
                 Approve plan
               </Button>
-              <Button type="submit" variant="outline" disabled={busy} loading={formik.isSubmitting}>
+              <Button
+                className="flex-1"
+                type="submit"
+                variant="outline"
+                disabled={busy}
+                loading={formik.isSubmitting}
+              >
                 Request changes
               </Button>
             </div>
@@ -719,14 +725,10 @@ function QuestionCard({
               )
             ) : null}
             <form onSubmit={formik.handleSubmit} noValidate>
-              <div className="flex items-end gap-2">
-                <Textarea
-                  rows={2}
-                  className="flex-1"
-                  placeholder="Answer…"
-                  {...formik.getFieldProps("answer")}
-                />
+              <div className="space-y-2">
+                <Textarea rows={2} placeholder="Answer…" {...formik.getFieldProps("answer")} />
                 <Button
+                  className="w-full"
                   type="submit"
                   variant="primary"
                   disabled={busy}
