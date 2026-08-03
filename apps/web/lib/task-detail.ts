@@ -19,6 +19,8 @@ export interface StageRunView {
 
 export interface QuestionView {
   id: string;
+  /** May be a real StageRun id or the sentinel strings "runner"/"orchestrator". */
+  stageRunId: string;
   kind: string;
   text: string;
   contextSummary: string;
@@ -140,6 +142,7 @@ export async function getTaskDetail(taskId: string): Promise<TaskDetail> {
     })),
     questions: task.questions.map((q) => ({
       id: q.id,
+      stageRunId: q.stageRunId,
       kind: q.kind,
       text: q.text,
       contextSummary: q.contextSummary,

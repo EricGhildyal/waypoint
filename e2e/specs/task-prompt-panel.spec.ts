@@ -4,20 +4,21 @@ import { reseed } from "../fixtures/reseed";
 
 /**
  * The task detail page shows the task's prompt in a read-only <details>
- * disclosure sitting between the page header and the stage stepper.
+ * disclosure sitting between the page header and the stage-run list.
  *
  * The contract this suite pins down:
  *   - present on every task in every status, collapsed on first paint
  *   - expands to the full prompt as PLAIN text (not markdown), line breaks kept
  *   - genuinely read-only: no input, textarea or contenteditable inside it
- *   - stays expanded across the page's 2.5s SWR polling and across tab switches
- *   - long prompts scroll inside the panel instead of pushing the tabs down
+ *   - stays expanded across the page's 2.5s SWR polling, and while the
+ *     stage-run rows below it are expanded and collapsed
+ *   - long prompts scroll inside the panel instead of pushing the list down
  *   - nothing overflows horizontally, including at 375px
  */
 
 /**
- * The Prompt disclosure. Scoped by its summary because the page renders a
- * second <details> for the mobile checklist.
+ * The Prompt disclosure — the page's only <details>; the stage-run rows are
+ * controlled Disclosure buttons rather than native disclosures.
  */
 function promptPanel(page: Page): Locator {
   return page
@@ -44,7 +45,7 @@ test.beforeEach(() => {
 });
 
 test.describe("Prompt panel", () => {
-  test("is collapsed on first paint and sits between the header and the stepper", async ({
+  test("is collapsed on first paint and sits between the header and the stage-run list", async ({
     page,
   }) => {
     await page.goto(`/tasks/${FIXTURES.steerTaskId}`);
@@ -54,14 +55,16 @@ test.describe("Prompt panel", () => {
     expect(await isOpen(page)).toBe(false);
     await expect(promptBody(page)).toBeHidden();
 
-    // the disclosure is wedged between the header block and the stage stepper
-    const neighbours = await panel.evaluate((d) => ({
-      prev: d.previousElementSibling?.textContent ?? "",
-      next: d.nextElementSibling?.textContent ?? "",
-    }));
-    expect(neighbours.prev).toContain("E2E — steer form");
-    expect(neighbours.next).toContain("Planning");
-    expect(neighbours.next).toContain("Implementation");
+    // the header block is the disclosure's immediate predecessor…
+    const prev = await panel.evaluate((d) => d.previousElementSibling?.textContent ?? "");
+    expect(prev).toContain("E2E — steer form");
+
+    // …and the stage-run list sits wholly below it
+    const firstRow = page.getByRole("button", { name: /^Implementation #1/ });
+    await expect(firstRow).toBeVisible();
+    const [panelBox, rowBox] = [await panel.boundingBox(), await firstRow.boundingBox()];
+    expect(panelBox && rowBox).toBeTruthy();
+    expect(panelBox!.y + panelBox!.height).toBeLessThanOrEqual(rowBox!.y);
   });
 
   test("expanding reveals the prompt, collapsing hides it again", async ({ page }) => {
@@ -129,7 +132,7 @@ test.describe("Prompt panel", () => {
     expect(overflow.page).toBe(false);
   });
 
-  test("caps a long prompt at a scrollable region rather than pushing the tabs down", async ({
+  test("caps a long prompt at a scrollable region rather than pushing the list down", async ({
     page,
   }) => {
     await page.goto(`/tasks/${FIXTURES.promptTaskId}`);
@@ -150,11 +153,11 @@ test.describe("Prompt panel", () => {
     expect(metrics.scrollHeight).toBeGreaterThan(metrics.clientHeight);
     expect(metrics.overflowY).toBe("auto");
 
-    // the tab bar is still reachable near the top of the page
-    const tabsTop = await page
-      .getByRole("button", { name: "Activity", exact: true })
+    // the stage-run list is still reachable near the top of the page
+    const listTop = await page
+      .getByRole("button", { name: /^Implementation #1/ })
       .evaluate((el) => el.getBoundingClientRect().top);
-    expect(tabsTop).toBeLessThan(700);
+    expect(listTop).toBeLessThan(700);
   });
 
   test("stays expanded across the 2.5s polling re-renders", async ({ page }) => {
@@ -175,24 +178,24 @@ test.describe("Prompt panel", () => {
     await expect(promptBody(page)).toBeVisible();
   });
 
-  test("stays expanded, and above the tab bar, while switching tabs", async ({ page }) => {
-    await page.goto(`/tasks/${FIXTURES.steerTaskId}`);
+  test("stays expanded, and above the list, while stage-run rows are toggled", async ({ page }) => {
+    await page.goto(`/tasks/${FIXTURES.historyTaskId}`);
     await promptSummary(page).click();
     await expect(promptBody(page)).toBeVisible();
 
-    for (const tab of ["Plan", "Questions", "Usage", "Findings", "Activity"]) {
-      await page.getByRole("button", { name: tab, exact: true }).click();
+    // collapsing and re-expanding the rows below must not disturb the panel
+    for (const row of [/^Planning #1/, /^Implementation #1/, /^Review #1/, /^Planning #1/]) {
+      const header = page.getByRole("button", { name: row }).first();
+      await header.click();
 
-      expect(await isOpen(page), `panel collapsed after opening the ${tab} tab`).toBe(true);
+      expect(await isOpen(page), `panel collapsed after toggling ${row}`).toBe(true);
       await expect(promptBody(page)).toBeVisible();
 
-      const [panelTop, tabsTop] = [
+      const [panelTop, rowTop] = [
         await promptPanel(page).evaluate((el) => el.getBoundingClientRect().top),
-        await page
-          .getByRole("button", { name: "Activity", exact: true })
-          .evaluate((el) => el.getBoundingClientRect().top),
+        await header.evaluate((el) => el.getBoundingClientRect().top),
       ];
-      expect(panelTop, `panel dropped below the tab bar on the ${tab} tab`).toBeLessThan(tabsTop);
+      expect(panelTop, `panel dropped below the list after toggling ${row}`).toBeLessThan(rowTop);
     }
   });
 
@@ -210,6 +213,7 @@ test.describe("Prompt panel", () => {
       FIXTURES.planTaskId, // AWAITING_PLAN_APPROVAL
       FIXTURES.optionsTaskId, // NEEDS_INPUT + options
       FIXTURES.blankPromptTaskId, // PAUSED
+      FIXTURES.historyTaskId, // DONE
     ];
 
     for (const id of ids) {
@@ -239,6 +243,19 @@ test.describe("Prompt panel — narrow viewport", () => {
         375,
       );
       expect(await promptBody(page).evaluate((el) => el.scrollWidth > el.clientWidth)).toBe(false);
+    }
+  });
+
+  test("survives the Activity | Checklist switch", async ({ page }) => {
+    await page.goto(`/tasks/${FIXTURES.historyTaskId}`);
+    await promptSummary(page).click();
+    await expect(promptBody(page)).toBeVisible();
+
+    // the panel sits above the switcher, so it belongs to both views
+    for (const view of ["Checklist", "Activity"]) {
+      await page.getByRole("button", { name: view, exact: true }).click();
+      expect(await isOpen(page), `panel collapsed on the ${view} view`).toBe(true);
+      await expect(promptBody(page)).toBeVisible();
     }
   });
 });

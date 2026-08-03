@@ -6,7 +6,7 @@
     "jsx": "preserve",
     "incremental": true,
     "module": "esnext",
-    "types": ["node"],
+    "types": ["node", "bun"],
     "plugins": [{ "name": "next" }],
     "paths": {
       "@/*": ["./*"]

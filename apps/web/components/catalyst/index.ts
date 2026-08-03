@@ -10,11 +10,12 @@ export { ButtonGroup, YES_NO_OPTIONS, type ButtonGroupOption } from "./button-gr
 export { Card } from "./card";
 export { Checkbox } from "./checkbox";
 export { Dialog } from "./dialog";
+export { Disclosure } from "./disclosure";
 export { Divider } from "./divider";
 export { EmptyState } from "./empty-state";
 export { Field } from "./field";
 export { Heading } from "./heading";
-export { ChevronDownIcon } from "./icons";
+export { CheckIcon, ChevronDownIcon, CircleOutlineIcon, MinusIcon, XMarkIcon } from "./icons";
 export { Input } from "./input";
 export { MultiSelect } from "./multi-select";
 export { Select } from "./select";

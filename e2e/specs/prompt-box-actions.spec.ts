@@ -5,9 +5,9 @@ import { reseed } from "../fixtures/reseed";
 /**
  * The three prompt boxes on the task detail page must have their action
  * buttons fill the width of the box:
- *   - Activity tab / Steer            -> single button, full width, below the textarea
- *   - Questions tab / Send            -> single button, full width, below the textarea
- *   - Plan tab / Approve · Request    -> two buttons side by side, half the width each
+ *   - Steer box (below the stage-run list)   -> single button, full width, below the textarea
+ *   - Answer box (inside its stage row)      -> single button, full width, below the textarea
+ *   - Plan approval (in the Planning row)    -> two buttons side by side, half the width each
  * Each layout assertion is paired with the behaviour it must not break.
  */
 
@@ -28,7 +28,7 @@ test.beforeEach(() => {
   reseed();
 });
 
-test.describe("Steer box (Activity tab)", () => {
+test.describe("Steer box", () => {
   test("the Steer button fills the box width and sits below the textarea", async ({ page }) => {
     await page.goto(`/tasks/${FIXTURES.steerTaskId}`);
 
@@ -60,9 +60,9 @@ test.describe("Steer box (Activity tab)", () => {
   });
 });
 
-test.describe("Answer box (Questions tab)", () => {
+test.describe("Answer box (inside its stage row)", () => {
   test("the Send button fills the box width and sits below the textarea", async ({ page }) => {
-    await page.goto(`/tasks/${FIXTURES.questionTaskId}?focus=questions`);
+    await page.goto(`/tasks/${FIXTURES.questionTaskId}`);
 
     const textarea = page.getByPlaceholder("Answer…");
     const send = page.getByRole("button", { name: "Send" });
@@ -73,14 +73,14 @@ test.describe("Answer box (Questions tab)", () => {
   });
 
   test("submitting empty still shows the validation error", async ({ page }) => {
-    await page.goto(`/tasks/${FIXTURES.questionTaskId}?focus=questions`);
+    await page.goto(`/tasks/${FIXTURES.questionTaskId}`);
 
     await page.getByRole("button", { name: "Send" }).click();
     await expect(page.getByText("Write an answer first")).toBeVisible();
   });
 
   test("answering records the answer and closes the question", async ({ page }) => {
-    await page.goto(`/tasks/${FIXTURES.questionTaskId}?focus=questions`);
+    await page.goto(`/tasks/${FIXTURES.questionTaskId}`);
 
     await page.getByPlaceholder("Answer…").fill("Use the in-memory store for now.");
     await page.getByRole("button", { name: "Send" }).click();
@@ -92,7 +92,7 @@ test.describe("Answer box (Questions tab)", () => {
   test("one-click options stay full width above the Send button and still answer", async ({
     page,
   }) => {
-    await page.goto(`/tasks/${FIXTURES.optionsTaskId}?focus=questions`);
+    await page.goto(`/tasks/${FIXTURES.optionsTaskId}`);
 
     const send = page.getByRole("button", { name: "Send" });
     const yes = page.getByRole("button", { name: "Yes", exact: true });
@@ -108,7 +108,7 @@ test.describe("Answer box (Questions tab)", () => {
   });
 });
 
-test.describe("Plan approval box (Plan tab)", () => {
+test.describe("Plan approval box (Planning row)", () => {
   test("Approve plan and Request changes split the card width", async ({ page }) => {
     await page.goto(`/tasks/${FIXTURES.planTaskId}?focus=plan`);
 

@@ -2,13 +2,14 @@
  * Deterministic fixtures for the e2e suite.
  *
  * Creates one project and a task pinned to each UI state the specs need:
- *   e2e-steer      IMPLEMENTING            -> Activity tab renders the Steer form
- *   e2e-question   NEEDS_INPUT + question  -> Questions tab renders the answer form
- *   e2e-plan       AWAITING_PLAN_APPROVAL  -> Plan tab renders Approve / Request changes
- *   e2e-options    NEEDS_INPUT + options   -> segmented options above the Send form
+ *   e2e-steer      IMPLEMENTING            -> Steer form under the stage-run list
+ *   e2e-question   NEEDS_INPUT + question  -> answer form inside its stage row
+ *   e2e-plan       AWAITING_PLAN_APPROVAL  -> Approve / Request changes in the Planning row
+ *   e2e-options    NEEDS_INPUT + options   -> segmented answer options in its stage row
  *   e2e-prompt     IMPLEMENTING            -> long markdown-ish prompt for the Prompt panel
  *   e2e-blank      PAUSED                  -> whitespace-only prompt, Prompt panel empty state
  *   e2e-failed     FAILED                  -> Retry dialog beside the Prompt panel
+ *   e2e-history    DONE                    -> full Planning→Impl→Review history + PR row
  *
  * Idempotent: re-running deletes and recreates the fixture tasks. Task ids are
  * fixed so specs can navigate straight to /tasks/{id} without discovery.
@@ -21,7 +22,7 @@
 import { promises as fs } from "node:fs";
 import { artifactDir, artifactPath } from "@waypoint/core";
 import { db } from "@waypoint/core/db";
-import { FIXTURES, PROMPT_FIXTURE_TEXT } from "./ids";
+import { FIXTURES, HISTORY_RUNS, PROMPT_FIXTURE_TEXT } from "./ids";
 
 const MODELS = {
   planningModel: "claude-fable-5",
@@ -29,6 +30,9 @@ const MODELS = {
   reviewModel: "claude-fable-5",
   testingModel: "claude-fable-5",
 };
+
+/** Minutes past a fixed epoch — deterministic timestamps for the history task. */
+const t = (minutes: number) => new Date(Date.UTC(2026, 0, 1, 0, minutes));
 
 async function main() {
   const user = await db.user.upsert({
@@ -57,6 +61,7 @@ async function main() {
     FIXTURES.promptTaskId,
     FIXTURES.blankPromptTaskId,
     FIXTURES.failedTaskId,
+    FIXTURES.historyTaskId,
   ];
   await db.task.deleteMany({ where: { id: { in: ids } } });
 
@@ -247,6 +252,139 @@ async function main() {
       ...MODELS,
     },
   });
+
+  // 8. finished task with a full run history -> stage-run list, findings, PR row
+  const historyTask = await db.task.create({
+    data: {
+      id: FIXTURES.historyTaskId,
+      projectId: project.id,
+      createdById: user.id,
+      title: "E2E — stage-run history",
+      prompt: "Fixture task finished through review with a PR.",
+      difficulty: "MEDIUM",
+      status: "DONE",
+      currentStage: "REVIEW",
+      reviewCycles: 1,
+      branchName: "waypoint/e2e-history",
+      prUrl: "https://github.com/example/e2e-fixtures/pull/7",
+      checklist: [
+        { text: "Wire the settings form", state: "completed" },
+        { text: "Add e2e coverage", state: "completed" },
+      ],
+      ...MODELS,
+      stageRuns: {
+        create: [
+          {
+            id: HISTORY_RUNS.planning,
+            stage: "PLANNING",
+            attempt: 1,
+            model: MODELS.planningModel,
+            status: "SUCCEEDED",
+            inputTokens: 12_000,
+            outputTokens: 6_000,
+            cacheReadTokens: 30_000,
+            cacheCreationTokens: 2_000,
+            startedAt: t(0),
+            endedAt: t(10),
+          },
+          {
+            id: HISTORY_RUNS.implementation,
+            stage: "IMPLEMENTATION",
+            attempt: 1,
+            model: MODELS.implementationModel,
+            status: "SUCCEEDED",
+            inputTokens: 40_000,
+            outputTokens: 25_000,
+            cacheReadTokens: 90_000,
+            cacheCreationTokens: 8_000,
+            startedAt: t(10),
+            endedAt: t(20),
+          },
+          {
+            id: HISTORY_RUNS.review,
+            stage: "REVIEW",
+            attempt: 1,
+            model: MODELS.reviewModel,
+            status: "SUCCEEDED",
+            inputTokens: 15_000,
+            outputTokens: 5_000,
+            cacheReadTokens: 40_000,
+            cacheCreationTokens: 3_000,
+            startedAt: t(20),
+            endedAt: t(25),
+          },
+        ],
+      },
+    },
+  });
+  await db.event.createMany({
+    data: [
+      {
+        taskId: historyTask.id,
+        stageRunId: HISTORY_RUNS.planning,
+        type: "STAGE_START",
+        payload: { stage: "PLANNING", attempt: 1, model: MODELS.planningModel },
+        createdAt: t(0),
+      },
+      {
+        // deliberately NULL stageRunId — must resolve into the implementation
+        // row via its [start, next start) window
+        taskId: historyTask.id,
+        type: "STATUS_CHANGE",
+        payload: { from: "PLANNING", to: "IMPLEMENTING" },
+        createdAt: t(10),
+      },
+      {
+        taskId: historyTask.id,
+        stageRunId: HISTORY_RUNS.implementation,
+        type: "LOG",
+        payload: { source: "assistant", line: "Refactoring the settings form" },
+        createdAt: t(12),
+      },
+      {
+        taskId: historyTask.id,
+        type: "PR_OPENED",
+        payload: { url: "https://github.com/example/e2e-fixtures/pull/7" },
+        createdAt: t(26),
+      },
+    ],
+  });
+  await db.question.create({
+    data: {
+      taskId: historyTask.id,
+      stageRunId: HISTORY_RUNS.implementation,
+      kind: "QUESTION",
+      text: "Keep the legacy settings export?",
+      contextSummary: "Fixture answered question for the history task.",
+      status: "ANSWERED",
+      answer: "Drop it.",
+      answeredVia: "UI",
+      createdAt: t(14),
+      answeredAt: t(15),
+    },
+  });
+  await fs.mkdir(artifactDir(historyTask.id), { recursive: true });
+  await fs.writeFile(
+    artifactPath(historyTask.id, "plan.md"),
+    "# History plan\n\n- [x] Step one\n- [x] Step two\n",
+    "utf8",
+  );
+  await fs.writeFile(
+    artifactPath(historyTask.id, "review-findings-1.json"),
+    JSON.stringify({
+      verdict: "approve",
+      findings: [
+        {
+          severity: "low",
+          category: "readability",
+          file: "apps/web/example.ts",
+          description: "Fixture finding for the e2e suite.",
+          suggestion: "Rename the helper.",
+        },
+      ],
+    }),
+    "utf8",
+  );
 
   console.log("[e2e seed] fixtures ready");
 }

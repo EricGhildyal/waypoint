@@ -19,7 +19,8 @@ export default function AppLayout({ children }: { children: ReactNode }) {
           <span className="text-3xl leading-none">🧭</span>
           <SidebarNav horizontal />
         </div>
-        <main className="mx-auto w-full max-w-6xl p-5 sm:p-8">{children}</main>
+        {/* 384 spacing units = 96rem = 1536px */}
+        <main className="mx-auto w-full max-w-384 p-5 sm:p-8">{children}</main>
       </div>
     </div>
   );

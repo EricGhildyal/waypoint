@@ -49,6 +49,20 @@ export function formatTokens(n: number): string {
   return String(n);
 }
 
+/** Compact elapsed time between two instants: "34s", "12m 4s", "1h 07m". */
+export function formatDuration(startIso: string, endIso: string): string {
+  const totalSeconds = Math.max(
+    0,
+    Math.floor((new Date(endIso).getTime() - new Date(startIso).getTime()) / 1000),
+  );
+  if (totalSeconds < 60) return `${totalSeconds}s`;
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  if (minutes < 60) return seconds ? `${minutes}m ${seconds}s` : `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  return `${hours}h ${String(minutes % 60).padStart(2, "0")}m`;
+}
+
 export function formatTime(iso: string): string {
   return new Date(iso).toLocaleString(undefined, {
     month: "short",

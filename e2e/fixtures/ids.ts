@@ -1,11 +1,11 @@
 /** Fixed ids for the e2e fixtures, so specs can navigate straight to a task. */
 export const FIXTURES = {
   projectName: "e2e-fixtures",
-  /** IMPLEMENTING — Activity tab renders the Steer form. */
+  /** IMPLEMENTING — the page renders the Steer form under the stage-run list. */
   steerTaskId: "e2e00000-0000-4000-8000-000000000001",
-  /** NEEDS_INPUT + free-text question — Questions tab renders the Send form. */
+  /** NEEDS_INPUT + free-text question — the Send form renders inside its stage row. */
   questionTaskId: "e2e00000-0000-4000-8000-000000000002",
-  /** AWAITING_PLAN_APPROVAL — Plan tab renders Approve plan / Request changes. */
+  /** AWAITING_PLAN_APPROVAL — the Planning row renders Approve plan / Request changes. */
   planTaskId: "e2e00000-0000-4000-8000-000000000003",
   /** NEEDS_INPUT + multiple-choice question — segmented options above the Send form. */
   optionsTaskId: "e2e00000-0000-4000-8000-000000000004",
@@ -15,6 +15,15 @@ export const FIXTURES = {
   blankPromptTaskId: "e2e00000-0000-4000-8000-000000000006",
   /** FAILED — the only status that also renders the (editable) Retry prompt textarea. */
   failedTaskId: "e2e00000-0000-4000-8000-000000000007",
+  /** DONE with a full Planning→Impl→Review history, findings, and a PR. */
+  historyTaskId: "e2e00000-0000-4000-8000-000000000008",
+} as const;
+
+/** Fixed StageRun ids for the history fixture, for transcript-link assertions. */
+export const HISTORY_RUNS = {
+  planning: "e2e00000-0000-4000-8000-0000000000a1",
+  implementation: "e2e00000-0000-4000-8000-0000000000a2",
+  review: "e2e00000-0000-4000-8000-0000000000a3",
 } as const;
 
 /**

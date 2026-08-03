@@ -2,70 +2,48 @@
 
 import clsx from "clsx";
 import { useFormik } from "formik";
-import Link from "next/link";
-import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import useSWR, { useSWRConfig } from "swr";
 import * as Yup from "yup";
 import {
   Badge,
   Button,
   ButtonGroup,
+  type ButtonGroupOption,
   Card,
   Dialog,
   Field,
   Subheading,
-  Tabs,
   Textarea,
 } from "@/components/catalyst";
 import { ErrorText, fieldError } from "@/components/form-utils";
-import { Markdown } from "@/components/markdown";
-import { FindingsApproval } from "./findings-approval";
-import { BudgetBar, UsageChart } from "./usage-chart";
 import {
   STAGE_LABELS,
   STATUS_COLORS,
   STATUS_LABELS,
   apiFetch,
-  formatTime,
   formatTokens,
   swrFetcher,
 } from "@/lib/format";
 import type { ChecklistItem } from "@waypoint/core";
-import type { QuestionView, TaskDetail } from "@/lib/task-detail";
+import type { TaskDetail } from "@/lib/task-detail";
+import { BudgetBar } from "./budget-bar";
+import { isHighlight } from "./event-line";
+import type { FeedEvent } from "./stage-run-groups";
+import { StageRunList } from "./stage-run-list";
 
-interface FeedEvent {
-  id: string;
-  type: string;
-  stageRunId: string | null;
-  payload: Record<string, unknown>;
-  createdAt: string;
-}
+// Mobile-only view switcher; desktop shows both columns side by side.
+const VIEW_OPTIONS: ReadonlyArray<ButtonGroupOption<"activity" | "checklist">> = [
+  { value: "activity", label: "Activity" },
+  { value: "checklist", label: "Checklist" },
+];
 
-const PIPELINE_STAGES = ["PLANNING", "IMPLEMENTATION", "REVIEW", "TESTING", "PR"] as const;
-
-// The feed shows pipeline-level highlights plus the model's own narration
-// (LOG lines tagged source: assistant/thinking); tool-call and command spam
-// (untagged LOG debug/info, TOKEN_UPDATE) stays in the stage transcripts.
-// CHECKLIST_UPDATE is omitted because the checklist is always visible beside
-// the feed.
-const HIGHLIGHT_TYPES = new Set([
-  "STATUS_CHANGE",
-  "STAGE_START",
-  "STAGE_END",
-  "QUESTION",
-  "ANSWER",
-  "STEER",
-  "ERROR",
-  "REVIEW_FINDINGS",
-  "TEST_FINDINGS",
-  "PR_OPENED",
-]);
-
-function isHighlight(event: FeedEvent): boolean {
-  if (HIGHLIGHT_TYPES.has(event.type)) return true;
-  if (event.type !== "LOG") return false;
-  const { source, level } = event.payload;
-  return source === "assistant" || source === "thinking" || level === "warn" || level === "error";
+function dedupeAppend(prev: FeedEvent[], next: FeedEvent[]): FeedEvent[] {
+  // StrictMode's doubled dev effect can race two pollers over the shared
+  // cursor; a Map merge keeps the feed duplicate-free either way
+  const merged = new Map(prev.map((e) => [e.id, e]));
+  for (const e of next) merged.set(e.id, e);
+  return [...merged.values()].slice(-5000);
 }
 
 export function TaskDetailView({ initial, focus }: { initial: TaskDetail; focus: string | null }) {
@@ -76,24 +54,31 @@ export function TaskDetailView({ initial, focus }: { initial: TaskDetail; focus:
   });
   const task = data ?? initial;
 
-  // event feed with client-side cursor accumulation (§3 cursor)
+  // event feed with client-side cursor accumulation (§3 cursor); the inner
+  // while-loop catches up on full history in ceil(n/500) requests on first load
+  // instead of one 200-event page per 2.5s tick
   const [events, setEvents] = useState<FeedEvent[]>([]);
   const cursorRef = useRef<string | null>(null);
   useEffect(() => {
     let stop = false;
     async function poll() {
       try {
-        const query = cursorRef.current ? `?after=${encodeURIComponent(cursorRef.current)}` : "";
-        const res = await apiFetch<{ events: FeedEvent[]; cursor: string | null }>(
-          `/api/tasks/${initial.id}/events${query}`,
-        );
-        if (stop) return;
-        if (res.events.length) {
-          // advance the cursor past filtered-out events too, or they'd refetch forever
-          cursorRef.current = res.cursor;
-          const highlights = res.events.filter(isHighlight);
-          if (highlights.length) {
-            setEvents((prev) => [...prev, ...highlights].slice(-1000));
+        let fullPage = true;
+        while (fullPage) {
+          const query = new URLSearchParams({ limit: "500" });
+          if (cursorRef.current) query.set("after", cursorRef.current);
+          const res = await apiFetch<{ events: FeedEvent[]; cursor: string | null }>(
+            `/api/tasks/${initial.id}/events?${query}`,
+          );
+          if (stop) return;
+          fullPage = res.events.length === 500;
+          if (res.events.length) {
+            // advance the cursor past filtered-out events too, or they'd refetch forever
+            cursorRef.current = res.cursor;
+            const highlights = res.events.filter(isHighlight);
+            if (highlights.length) {
+              setEvents((prev) => dedupeAppend(prev, highlights));
+            }
           }
         }
       } catch {
@@ -108,9 +93,7 @@ export function TaskDetailView({ initial, focus }: { initial: TaskDetail; focus:
     };
   }, [initial.id]);
 
-  const [tab, setTab] = useState(
-    focus?.startsWith("question") ? "questions" : focus === "plan" ? "plan" : "activity",
-  );
+  const [view, setView] = useState<"activity" | "checklist">("activity");
   const [busy, setBusy] = useState(false);
 
   const action = useCallback(
@@ -131,9 +114,9 @@ export function TaskDetailView({ initial, focus }: { initial: TaskDetail; focus:
     [task.id, mutate],
   );
 
-  const openQuestions = task.questions.filter((q) => q.status === "OPEN");
   const running = ["PLANNING", "IMPLEMENTING", "REVIEWING", "TESTING"].includes(task.status);
   const pausable = running || ["AWAITING_PLAN_APPROVAL", "NEEDS_INPUT"].includes(task.status);
+  const active = !["DONE", "CANCELLED", "FAILED"].includes(task.status);
 
   return (
     <div className="space-y-4">
@@ -197,6 +180,11 @@ export function TaskDetailView({ initial, focus }: { initial: TaskDetail; focus:
             </Button>
           ) : null}
         </div>
+        {task.tokenBudget ? (
+          <div className="w-full sm:ml-auto sm:w-64">
+            <BudgetBar total={task.tokenTotal} budget={task.tokenBudget} />
+          </div>
+        ) : null}
       </div>
 
       <PromptPanel prompt={task.prompt} />
@@ -214,25 +202,27 @@ export function TaskDetailView({ initial, focus }: { initial: TaskDetail; focus:
         </Card>
       ) : null}
 
-      <StageStepper task={task} />
-
-      <Tabs
-        active={tab}
-        onChange={setTab}
-        tabs={[
-          { key: "activity", label: "Activity" },
-          { key: "plan", label: "Plan" },
-          { key: "questions", label: "Questions", badge: openQuestions.length },
-          { key: "usage", label: "Usage" },
-          { key: "findings", label: "Findings" },
-        ]}
+      <ButtonGroup
+        full
+        small
+        className="lg:hidden"
+        aria-label="View"
+        value={view}
+        options={VIEW_OPTIONS}
+        onChange={setView}
       />
 
-      {tab === "activity" ? <ActivityTab task={task} events={events} onSteer={action} /> : null}
-      {tab === "plan" ? <PlanTab task={task} /> : null}
-      {tab === "questions" ? <QuestionsTab task={task} focus={focus} /> : null}
-      {tab === "usage" ? <UsageTab task={task} /> : null}
-      {tab === "findings" ? <FindingsTab task={task} /> : null}
+      <div className="flex flex-col gap-4 lg:flex-row">
+        {/* the stage-run list ends at the in-progress row / its open question,
+            with the steer box last — newest content at the bottom */}
+        <div className={clsx("min-w-0 flex-1 space-y-3", view === "checklist" && "hidden lg:block")}>
+          <StageRunList task={task} events={events} focus={focus} />
+          {active ? <SteerForm onSteer={action} /> : null}
+        </div>
+        <aside className={clsx("lg:w-80 lg:shrink-0", view === "activity" && "hidden lg:block")}>
+          <ChecklistPanel items={task.checklist ?? []} />
+        </aside>
+      </div>
     </div>
   );
 }
@@ -303,9 +293,9 @@ function RetryButton({
 }
 
 /**
- * Read-only view of the task's prompt, one click away from every tab. It is an
- * uncontrolled <details> so the open/closed state survives the page's 2.5s SWR
- * re-renders without any state plumbing.
+ * Read-only view of the task's prompt, one click away above the stage-run list.
+ * It is an uncontrolled <details> so the open/closed state survives the page's
+ * 2.5s SWR re-renders without any state plumbing.
  */
 function PromptPanel({ prompt }: { prompt: string }) {
   return (
@@ -324,97 +314,6 @@ function PromptPanel({ prompt }: { prompt: string }) {
         )}
       </div>
     </details>
-  );
-}
-
-function StageStepper({ task }: { task: TaskDetail }) {
-  const currentIndex =
-    task.status === "OPENING_PR" || task.status === "DONE"
-      ? 4
-      : task.currentStage
-        ? PIPELINE_STAGES.indexOf(task.currentStage as (typeof PIPELINE_STAGES)[number])
-        : -1;
-  return (
-    // wraps to as many rows as the viewport needs — never scrolls sideways
-    <div className="flex flex-wrap items-center gap-x-1 gap-y-2">
-      {PIPELINE_STAGES.map((stage, i) => {
-        const done = i < currentIndex || task.status === "DONE";
-        const active = i === currentIndex && task.status !== "DONE";
-        return (
-          <div key={stage} className="flex items-center gap-1">
-            {/* connectors would strand a dash at the start of a wrapped row */}
-            {i > 0 ? <div className="hidden h-px w-4 bg-zinc-700 sm:block" /> : null}
-            <div
-              className={clsx(
-                "whitespace-nowrap rounded-full px-3 py-1 text-xs font-medium sm:text-sm",
-                done && "bg-green-500/15 text-green-300",
-                active && "bg-indigo-500/20 text-indigo-300 ring-1 ring-indigo-500/40",
-                !done && !active && "bg-zinc-800/60 text-zinc-500",
-              )}
-            >
-              {stage === "PR" ? "PR" : STAGE_LABELS[stage]}
-            </div>
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
-function ActivityTab({
-  task,
-  events,
-  onSteer,
-}: {
-  task: TaskDetail;
-  events: FeedEvent[];
-  onSteer: (name: string, prompt?: string) => Promise<void>;
-}) {
-  const feedRef = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    const el = feedRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
-  }, [events.length]);
-
-  const active = !["DONE", "CANCELLED", "FAILED"].includes(task.status);
-
-  return (
-    // checklist first in DOM: collapsed summary on top for mobile, and
-    // flex-row-reverse pins it to the right on desktop
-    <div className="flex flex-col gap-3 lg:flex-row-reverse">
-      <ChecklistPanel items={task.checklist ?? []} />
-      <div className="min-w-0 flex-1 space-y-3">
-        <div
-          ref={feedRef}
-          className="feed-scroll h-96 space-y-1 overflow-y-auto rounded-xl border border-zinc-800 bg-zinc-950 p-3 font-mono text-xs"
-        >
-          {events.length === 0 ? (
-            <p className="text-zinc-600">No highlights yet…</p>
-          ) : (
-            events.map((e) => <EventLine key={e.id} event={e} />)
-          )}
-        </div>
-        {task.stageRuns.length ? (
-          <p className="text-xs text-zinc-500">
-            Full transcripts:{" "}
-            {task.stageRuns.map((r, i) => (
-              <span key={r.id}>
-                {i > 0 ? " · " : ""}
-                <a
-                  className="text-indigo-400 hover:underline"
-                  href={`/api/tasks/${task.id}/transcript/${r.id}`}
-                  target="_blank"
-                  rel="noreferrer"
-                >
-                  {STAGE_LABELS[r.stage] ?? r.stage} #{r.attempt}
-                </a>
-              </span>
-            ))}
-          </p>
-        ) : null}
-        {active ? <SteerForm onSteer={onSteer} /> : null}
-      </div>
-    </div>
   );
 }
 
@@ -449,212 +348,26 @@ function SteerForm({ onSteer }: { onSteer: (name: string, prompt?: string) => Pr
   );
 }
 
-const EVENT_STYLES: Record<string, string> = {
-  STATUS_CHANGE: "text-purple-300",
-  STAGE_START: "text-sky-300",
-  STAGE_END: "text-sky-300",
-  ERROR: "text-red-400",
-  QUESTION: "text-amber-300",
-  ANSWER: "text-green-300",
-  STEER: "text-indigo-300",
-  PR_OPENED: "text-green-300",
-  REVIEW_FINDINGS: "text-cyan-300",
-  TEST_FINDINGS: "text-cyan-300",
-};
-
-function EventLine({ event }: { event: FeedEvent }) {
-  const p = event.payload;
-  let text: string;
-  switch (event.type) {
-    case "STATUS_CHANGE":
-      text = `${STATUS_LABELS[String(p.from)] ?? p.from} → ${STATUS_LABELS[String(p.to)] ?? p.to}${p.reason ? ` (${p.reason})` : ""}`;
-      break;
-    case "STAGE_START":
-      text = `${STAGE_LABELS[String(p.stage)] ?? p.stage} #${p.attempt} started (${p.model})`;
-      break;
-    case "STAGE_END":
-      text = `${STAGE_LABELS[String(p.stage)] ?? p.stage} #${p.attempt} ended: ${p.status}`;
-      break;
-    case "LOG":
-      // only assistant/thinking narration and warn/error lines pass the filter
-      text = `${p.source === "thinking" ? "💭 " : ""}${String(p.line ?? "")}`;
-      break;
-    case "ERROR":
-      text = `${p.code}: ${p.message}`;
-      break;
-    case "REVIEW_FINDINGS":
-    case "TEST_FINDINGS":
-      text = `${event.type === "REVIEW_FINDINGS" ? "review" : "testing"} #${p.attempt}: ${p.verdict} (${p.count} findings)`;
-      break;
-    case "STEER":
-      text = `steer: ${p.text}`;
-      break;
-    case "PR_OPENED":
-      text = `PR opened: ${p.url}`;
-      break;
-    case "QUESTION":
-      text = "question raised";
-      break;
-    case "ANSWER":
-      text = `answered via ${p.via}`;
-      break;
-    default:
-      text = JSON.stringify(p);
-  }
-  const style = event.type === "LOG" ? logStyle(p) : (EVENT_STYLES[event.type] ?? "text-zinc-400");
-  // narration is prose — wrap on word boundaries; everything else stays break-all
-  const isProse = event.type === "LOG" && (p.source === "assistant" || p.source === "thinking");
-  return (
-    <div className="flex gap-2">
-      <span className="shrink-0 text-zinc-600">
-        {new Date(event.createdAt).toLocaleTimeString(undefined, { hour12: false })}
-      </span>
-      <span className={clsx(isProse ? "whitespace-pre-wrap wrap-break-word" : "break-all", style)}>
-        {text}
-      </span>
-    </div>
-  );
-}
-
-function logStyle(p: Record<string, unknown>): string {
-  if (p.source === "thinking") return "italic text-zinc-500";
-  if (p.source === "assistant") return "text-zinc-200";
-  return p.level === "error" ? "text-red-400" : "text-yellow-300";
-}
-
-const RevisionSchema = Yup.object({
-  notes: Yup.string().trim().required("Describe the changes you want first"),
-});
-
-function PlanTab({ task }: { task: TaskDetail }) {
-  const { mutate } = useSWRConfig();
-  const [busy, setBusy] = useState(false);
-  const planQuestion = task.questions.find(
-    (q) => q.kind === "PLAN_APPROVAL" && q.status === "OPEN",
-  );
-
-  async function answer(text: string) {
-    if (!planQuestion) return;
-    await apiFetch(`/api/tasks/${task.id}/questions/${planQuestion.id}/answer`, {
-      method: "POST",
-      body: JSON.stringify({ answer: text }),
-    });
-    await mutate(`/api/tasks/${task.id}`);
-  }
-
-  // "Request changes" submits revision notes; "Approve" bypasses the form
-  const formik = useFormik({
-    initialValues: { notes: "" },
-    validationSchema: RevisionSchema,
-    onSubmit: async (values, helpers) => {
-      try {
-        await answer(values.notes.trim());
-        helpers.resetForm();
-      } catch (err) {
-        alert(err instanceof Error ? err.message : String(err));
-      } finally {
-        helpers.setSubmitting(false);
-      }
-    },
-  });
-
-  async function approve() {
-    setBusy(true);
-    try {
-      await answer("approve");
-    } catch (err) {
-      alert(err instanceof Error ? err.message : String(err));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <div className="space-y-4">
-      {task.plan ? (
-        <Card>
-          <Markdown>{task.plan}</Markdown>
-        </Card>
-      ) : (
-        <Card>
-          <p className="text-sm text-zinc-500">No plan yet — planning hasn’t completed.</p>
-        </Card>
-      )}
-      {planQuestion ? (
-        <Card className="space-y-3 border-purple-900/50">
-          <Subheading>Plan approval required</Subheading>
-          <form onSubmit={formik.handleSubmit} noValidate className="space-y-3">
-            <div>
-              <Textarea
-                rows={2}
-                className="w-full"
-                placeholder="Revision notes (sending them resumes planning)…"
-                {...formik.getFieldProps("notes")}
-              />
-              <ErrorText>{fieldError(formik, "notes")}</ErrorText>
-            </div>
-            <div className="flex gap-2">
-              <Button
-                className="flex-1"
-                type="button"
-                variant="primary"
-                disabled={formik.isSubmitting}
-                loading={busy}
-                onClick={() => void approve()}
-              >
-                Approve plan
-              </Button>
-              <Button
-                className="flex-1"
-                type="submit"
-                variant="outline"
-                disabled={busy}
-                loading={formik.isSubmitting}
-              >
-                Request changes
-              </Button>
-            </div>
-          </form>
-        </Card>
-      ) : null}
-    </div>
-  );
-}
-
 /**
- * The checklist rides alongside the activity feed instead of hiding in its own
- * tab: a pinned card on desktop, a collapsible progress summary above the feed
- * on mobile.
+ * The checklist owns the sticky right rail on desktop; on mobile it's the
+ * second view behind the Activity | Checklist switcher.
  */
 function ChecklistPanel({ items }: { items: ChecklistItem[] }) {
   const done = items.filter((i) => i.state === "completed").length;
   return (
-    <aside className="lg:w-72 lg:shrink-0">
-      <details className="rounded-xl border border-zinc-800 bg-zinc-900/50 lg:hidden">
-        <summary className="cursor-pointer select-none px-4 py-3 text-sm font-semibold text-zinc-200">
-          Checklist{" "}
-          <span className="font-normal text-zinc-500">
-            · {items.length ? `${done}/${items.length} done` : "none yet"}
+    <Card className="lg:sticky lg:top-8">
+      <div className="mb-3 flex items-baseline justify-between">
+        <Subheading>Checklist</Subheading>
+        {items.length ? (
+          <span className="text-xs tabular-nums text-zinc-500">
+            {done}/{items.length}
           </span>
-        </summary>
-        <div className="border-t border-zinc-800 p-4">
-          <ChecklistItems items={items} />
-        </div>
-      </details>
-      <Card className="hidden lg:block lg:sticky lg:top-4">
-        <div className="mb-3 flex items-baseline justify-between">
-          <Subheading>Checklist</Subheading>
-          {items.length ? (
-            <span className="text-xs tabular-nums text-zinc-500">
-              {done}/{items.length}
-            </span>
-          ) : null}
-        </div>
-        <div className="feed-scroll max-h-96 overflow-y-auto">
-          <ChecklistItems items={items} />
-        </div>
-      </Card>
-    </aside>
+        ) : null}
+      </div>
+      <div className="feed-scroll max-h-[calc(100vh-6rem)] overflow-y-auto">
+        <ChecklistItems items={items} />
+      </div>
+    </Card>
   );
 }
 
@@ -681,298 +394,5 @@ function ChecklistItems({ items }: { items: ChecklistItem[] }) {
         </li>
       ))}
     </ul>
-  );
-}
-
-function QuestionsTab({ task, focus }: { task: TaskDetail; focus: string | null }) {
-  return (
-    <div className="space-y-3">
-      {task.questions.length === 0 ? (
-        <Card>
-          <p className="text-sm text-zinc-500">No questions asked yet.</p>
-        </Card>
-      ) : (
-        task.questions.map((q) =>
-          // the review gate answers through its own checkbox list (§7), not the
-          // free-text form every other question kind uses
-          q.kind === "FINDINGS_APPROVAL" && q.items?.length ? (
-            <FocusAnchor key={q.id} highlighted={focus === `question-${q.id}`}>
-              <FindingsApproval taskId={task.id} question={q} />
-            </FocusAnchor>
-          ) : (
-            <QuestionCard
-              key={q.id}
-              taskId={task.id}
-              question={q}
-              highlighted={focus === `question-${q.id}`}
-            />
-          ),
-        )
-      )}
-    </div>
-  );
-}
-
-/** Scrolls itself into view when an email's ?focus= deeplink points at it (§8). */
-function FocusAnchor({ highlighted, children }: { highlighted: boolean; children: ReactNode }) {
-  const ref = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    if (highlighted) ref.current?.scrollIntoView({ block: "center" });
-  }, [highlighted]);
-  return (
-    <div ref={ref} className={clsx(highlighted && "rounded-xl ring-2 ring-indigo-500")}>
-      {children}
-    </div>
-  );
-}
-
-const AnswerSchema = Yup.object({
-  answer: Yup.string().trim().required("Write an answer first"),
-});
-
-function QuestionCard({
-  taskId,
-  question,
-  highlighted,
-}: {
-  taskId: string;
-  question: QuestionView;
-  highlighted: boolean;
-}) {
-  const { mutate } = useSWRConfig();
-  const [busy, setBusy] = useState(false);
-
-  async function send(text: string) {
-    await apiFetch(`/api/tasks/${taskId}/questions/${question.id}/answer`, {
-      method: "POST",
-      body: JSON.stringify({ answer: text }),
-    });
-    await mutate(`/api/tasks/${taskId}`);
-  }
-
-  const formik = useFormik({
-    initialValues: { answer: "" },
-    validationSchema: AnswerSchema,
-    onSubmit: async (values, helpers) => {
-      try {
-        await send(values.answer.trim());
-        helpers.resetForm();
-      } catch (err) {
-        alert(err instanceof Error ? err.message : String(err));
-      } finally {
-        helpers.setSubmitting(false);
-      }
-    },
-  });
-
-  /** one-click multiple-choice options bypass the free-text form */
-  async function submitOption(text: string) {
-    setBusy(true);
-    try {
-      await send(text);
-    } catch (err) {
-      alert(err instanceof Error ? err.message : String(err));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <FocusAnchor highlighted={highlighted}>
-      <Card className={clsx("space-y-2", question.status === "OPEN" && "border-amber-900/50")}>
-        <div className="flex items-center justify-between gap-2">
-          <Badge color={question.status === "OPEN" ? "amber" : "green"}>
-            {question.kind === "PLAN_APPROVAL" ? "Plan approval" : "Question"} ·{" "}
-            {question.status.toLowerCase()}
-          </Badge>
-          <span className="text-xs text-zinc-500">{formatTime(question.createdAt)}</span>
-        </div>
-        <p className="whitespace-pre-wrap text-sm text-zinc-200">{question.text}</p>
-        {question.contextSummary && question.contextSummary !== question.text ? (
-          <p className="text-xs text-zinc-500">{question.contextSummary}</p>
-        ) : null}
-        {question.status === "OPEN" ? (
-          <div className="space-y-2 pt-1">
-            {question.options?.length ? (
-              // a small set of mutually exclusive answers reads best as a
-              // segmented group ("Yes | No"); longer lists stay as loose buttons
-              question.options.length <= 3 ? (
-                <ButtonGroup
-                  full
-                  aria-label="Answer options"
-                  options={question.options.map((opt) => ({ value: opt, label: opt }))}
-                  onChange={(opt) => void submitOption(opt)}
-                  disabled={busy || formik.isSubmitting}
-                />
-              ) : (
-                <div className="flex flex-wrap gap-2">
-                  {question.options.map((opt) => (
-                    <Button
-                      key={opt}
-                      small
-                      type="button"
-                      variant="outline"
-                      disabled={busy || formik.isSubmitting}
-                      onClick={() => void submitOption(opt)}
-                    >
-                      {opt}
-                    </Button>
-                  ))}
-                </div>
-              )
-            ) : null}
-            <form onSubmit={formik.handleSubmit} noValidate>
-              <div className="space-y-2">
-                <Textarea rows={2} placeholder="Answer…" {...formik.getFieldProps("answer")} />
-                <Button
-                  className="w-full"
-                  type="submit"
-                  variant="primary"
-                  disabled={busy}
-                  loading={formik.isSubmitting}
-                >
-                  Send
-                </Button>
-              </div>
-              <ErrorText>{fieldError(formik, "answer")}</ErrorText>
-            </form>
-          </div>
-        ) : (
-          <p className="rounded-lg bg-zinc-900 p-2 text-sm text-zinc-300">
-            <span className="text-xs text-zinc-500">
-              Answered via {question.answeredVia?.toLowerCase() ?? "?"}:{" "}
-            </span>
-            {question.answer}
-          </p>
-        )}
-      </Card>
-    </FocusAnchor>
-  );
-}
-
-function UsageTab({ task }: { task: TaskDetail }) {
-  return (
-    <div className="space-y-4">
-      {task.tokenBudget ? (
-        <Card>
-          <BudgetBar total={task.tokenTotal} budget={task.tokenBudget} />
-        </Card>
-      ) : null}
-      {task.stageRuns.length === 0 ? (
-        <Card>
-          <p className="text-sm text-zinc-500">No stage runs yet.</p>
-        </Card>
-      ) : (
-        <>
-          <Card>
-            <Subheading className="mb-3">Tokens per stage run</Subheading>
-            <UsageChart runs={task.stageRuns} />
-          </Card>
-          <Card className="overflow-x-auto p-0">
-            <table className="w-full text-left text-sm">
-              <thead className="border-b border-zinc-800 text-xs uppercase tracking-wide text-zinc-500">
-                <tr>
-                  {["Stage", "Model", "Status", "Input", "Output", "Cache read", "Cache write"].map(
-                    (h) => (
-                      <th key={h} className="px-4 py-2 font-medium">
-                        {h}
-                      </th>
-                    ),
-                  )}
-                </tr>
-              </thead>
-              <tbody>
-                {task.stageRuns.map((r) => (
-                  <tr key={r.id} className="border-b border-zinc-800/60 last:border-0">
-                    <td className="px-4 py-2 text-zinc-200">
-                      {STAGE_LABELS[r.stage] ?? r.stage} #{r.attempt}
-                    </td>
-                    <td className="px-4 py-2 text-xs text-zinc-400">{r.model}</td>
-                    <td className="px-4 py-2 text-xs text-zinc-400">{r.status}</td>
-                    <td className="px-4 py-2 tabular-nums text-zinc-300">
-                      {r.inputTokens.toLocaleString()}
-                    </td>
-                    <td className="px-4 py-2 tabular-nums text-zinc-300">
-                      {r.outputTokens.toLocaleString()}
-                    </td>
-                    <td className="px-4 py-2 tabular-nums text-zinc-300">
-                      {r.cacheReadTokens.toLocaleString()}
-                    </td>
-                    <td className="px-4 py-2 tabular-nums text-zinc-300">
-                      {r.cacheCreationTokens.toLocaleString()}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </Card>
-        </>
-      )}
-    </div>
-  );
-}
-
-function FindingsTab({ task }: { task: TaskDetail }) {
-  if (task.findings.length === 0) {
-    return (
-      <Card>
-        <p className="text-sm text-zinc-500">No review or test findings yet.</p>
-      </Card>
-    );
-  }
-  return (
-    <div className="space-y-3">
-      {task.findings.map((f) => (
-        <Card key={`${f.kind}-${f.attempt}`} className="space-y-2">
-          <div className="flex items-center gap-2">
-            <Subheading>
-              {f.kind === "review" ? "Review" : "Testing"} cycle {f.attempt}
-            </Subheading>
-            <Badge color={f.findings.verdict === "approve" ? "green" : "amber"}>
-              {f.findings.verdict === "approve" ? "Approved" : "Changes requested"}
-            </Badge>
-          </div>
-          {f.findings.findings.length === 0 ? (
-            <p className="text-sm text-zinc-500">No findings.</p>
-          ) : (
-            <ul className="space-y-2">
-              {f.findings.findings.map((item) => (
-                <li
-                  key={`${item.file}-${item.description}`}
-                  className="rounded-lg bg-zinc-900 p-2.5 text-sm"
-                >
-                  <div className="flex items-center gap-2">
-                    {item.severity ? (
-                      <Badge
-                        color={
-                          item.severity === "high"
-                            ? "red"
-                            : item.severity === "medium"
-                              ? "amber"
-                              : "zinc"
-                        }
-                      >
-                        {item.severity}
-                      </Badge>
-                    ) : null}
-                    <code className="text-xs text-zinc-400">{item.file}</code>
-                  </div>
-                  <p className="mt-1 text-zinc-300">{item.description}</p>
-                  {item.suggestion ? (
-                    <p className="mt-1 text-xs text-zinc-500">💡 {item.suggestion}</p>
-                  ) : null}
-                </li>
-              ))}
-            </ul>
-          )}
-        </Card>
-      ))}
-      <p className="text-xs text-zinc-500">
-        Cycles used: review {task.reviewCycles}/3 · testing {task.testingCycles}/2.{" "}
-        <Link className="text-indigo-400 hover:underline" href={`/tasks/${task.id}`}>
-          ↻
-        </Link>
-      </p>
-    </div>
   );
 }
