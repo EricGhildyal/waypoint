@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { micromark } from "micromark";
 import { Resend } from "resend";
 import { db, emitEvent, getSetting } from "@waypoint/core";
 import type { FindingApprovalItem, Question, Task } from "@waypoint/core";
@@ -8,7 +9,16 @@ import { env } from "./env";
  * Email dispatch (§8) — the orchestrator owns all outbound mail. Emails carry
  * high-level context + a deeplink only, never transcripts.
  *
- * Exactly-once without schema additions:
+ * Threading (§8): all emails for a task land in one Gmail conversation. Gmail
+ * only groups messages when the subject matches (ignoring "Re:") AND the
+ * References/In-Reply-To headers link them, so every send goes through
+ * sendTaskEmail(): uniform subject `[Waypoint] {title}` ("Re: " on
+ * follow-ups) and headers pointing at the task's thread root. The first email
+ * sent for a task becomes the root — its Message-ID is persisted to
+ * Task.emailMessageId; later emails reference it. Event-specific text lives in
+ * the body label, never the subject.
+ *
+ * Exactly-once:
  *  - question emails use Question.emailMessageId as the sent marker
  *  - status emails (DONE / FAILED / BUDGET_EXCEEDED) key off their
  *    STATUS_CHANGE event id, recorded as an `email-sent:{eventId}` LOG event
@@ -23,14 +33,61 @@ export async function dispatchEmails(): Promise<void> {
   await sendStatusEmails(appUrl);
 }
 
-/** Prior outbound Message-ID for a task — set In-Reply-To so Gmail threads (§8). */
-async function threadHeaders(taskId: string): Promise<Record<string, string>> {
+/**
+ * The task's thread-root Message-ID, or null if no email has been sent yet.
+ * Re-fetches the task so an earlier send in the same dispatch tick is seen
+ * (question + status emails for one task can share a tick). Tasks predating
+ * Task.emailMessageId adopt their newest question email as the root, so the
+ * existing Gmail thread continues instead of forking.
+ */
+async function threadRoot(taskId: string): Promise<string | null> {
+  const task = await db.task.findUniqueOrThrow({
+    where: { id: taskId },
+    select: { emailMessageId: true },
+  });
+  if (task.emailMessageId) return task.emailMessageId;
   const prior = await db.question.findFirst({
     where: { taskId, emailMessageId: { not: null } },
     orderBy: { createdAt: "desc" },
   });
-  if (!prior?.emailMessageId) return {};
-  return { "In-Reply-To": prior.emailMessageId, References: prior.emailMessageId };
+  if (!prior?.emailMessageId) return null;
+  await db.task.update({ where: { id: taskId }, data: { emailMessageId: prior.emailMessageId } });
+  return prior.emailMessageId;
+}
+
+/**
+ * Every outbound task email goes through here — the uniform subject and the
+ * root-referencing headers are both required for Gmail to thread. The root
+ * email's Message-ID is persisted only after a successful send (failure ⇒
+ * nothing persisted ⇒ retried next tick).
+ */
+async function sendTaskEmail(
+  task: Task,
+  opts: {
+    bodyLabel: string;
+    bodyHtml: string;
+    link: string;
+    cta: string;
+    footer?: string;
+    replyTo?: string;
+    /** explicit Message-ID for this send (question emails persist theirs) */
+    messageId?: string;
+  },
+): Promise<boolean> {
+  const root = await threadRoot(task.id);
+  const messageId = opts.messageId ?? `<task-${task.id}.${randomUUID()}@${env.inboundDomain}>`;
+  const ok = await send({
+    subject: `${root ? "Re: " : ""}[Waypoint] ${task.title}`,
+    html: emailHtml(task.title, opts.bodyLabel, opts.bodyHtml, opts.link, opts.cta, opts.footer),
+    replyTo: opts.replyTo,
+    headers: root
+      ? { "Message-ID": messageId, "In-Reply-To": root, References: root }
+      : { "Message-ID": messageId },
+  });
+  if (ok && !root) {
+    await db.task.update({ where: { id: task.id }, data: { emailMessageId: messageId } });
+  }
+  return ok;
 }
 
 async function sendQuestionEmails(appUrl: string): Promise<void> {
@@ -45,11 +102,14 @@ async function sendQuestionEmails(appUrl: string): Promise<void> {
     const messageId = `<q-${q.id}.${randomUUID()}@${env.inboundDomain}>`;
     const mail = questionMail(q, link);
 
-    const ok = await send({
-      subject: `[Waypoint] ${q.task.title}: ${mail.subject}`,
-      html: emailHtml(q.task.title, mail.body, link, mail.cta, mail.footer),
+    const ok = await sendTaskEmail(q.task, {
+      bodyLabel: mail.label,
+      bodyHtml: mail.body,
+      link,
+      cta: mail.cta,
+      footer: mail.footer,
       replyTo: `q-${q.id}@${env.inboundDomain}`,
-      headers: { "Message-ID": messageId, ...(await threadHeaders(q.taskId)) },
+      messageId,
     });
     if (ok) {
       await db.question.update({ where: { id: q.id }, data: { emailMessageId: messageId } });
@@ -58,7 +118,8 @@ async function sendQuestionEmails(appUrl: string): Promise<void> {
 }
 
 interface QuestionMail {
-  subject: string;
+  /** event-specific label shown under the title (the subject stays uniform for threading) */
+  label: string;
   /** pre-rendered, already-escaped HTML */
   body: string;
   cta: string;
@@ -67,20 +128,24 @@ interface QuestionMail {
 
 function questionMail(q: Question, link: string): QuestionMail {
   if (q.kind === "PLAN_APPROVAL") {
-    return { subject: "plan ready for approval", body: block(planOverview(q)), cta: "Review plan" };
+    return {
+      label: "Plan ready for approval",
+      body: markdownBlock(planOverview(q)),
+      cta: "Review plan",
+    };
   }
   if (q.kind === "FINDINGS_APPROVAL") {
     const items = (q.items as FindingApprovalItem[] | null) ?? [];
     const gated = items.filter((i) => !i.auto);
     return {
-      subject: `${gated.length} review finding${gated.length === 1 ? "" : "s"} need${gated.length === 1 ? "s" : ""} your approval`,
+      label: `${gated.length} review finding${gated.length === 1 ? "" : "s"} need${gated.length === 1 ? "s" : ""} your approval`,
       body: findingsList(items, link),
       cta: "Open the review checklist",
       footer:
         'Or reply to this email with the numbers you want fixed (e.g. "1, 3") — reply "none" to skip them all.',
     };
   }
-  return { subject: "input needed", body: block(q.contextSummary), cta: "Answer" };
+  return { label: "Input needed", body: block(q.contextSummary), cta: "Answer" };
 }
 
 /** Plan emails carry the first section of plan.md only (§8). */
@@ -143,6 +208,15 @@ function block(text: string): string {
   return `<div style="font-size:14px;line-height:1.6;white-space:pre-wrap;background:#f4f4f5;border-radius:10px;padding:14px 16px">${escapeHtml(text)}</div>`;
 }
 
+/**
+ * Same grey panel, but `text` is markdown rendered to HTML. micromark encodes
+ * embedded HTML by default (allowDangerousHtml stays off), so the output is
+ * safe to inject un-escaped.
+ */
+function markdownBlock(text: string): string {
+  return `<div style="font-size:14px;line-height:1.6;background:#f4f4f5;border-radius:10px;padding:14px 16px">${micromark(text)}</div>`;
+}
+
 async function sendStatusEmails(appUrl: string): Promise<void> {
   const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
   const changes = await db.event.findMany({
@@ -173,39 +247,27 @@ async function sendStatusEmails(appUrl: string): Promise<void> {
     let ok = false;
 
     if (to === "DONE" && (await flag("notifyOnDone"))) {
-      ok = await send({
-        subject: `[Waypoint] ${task.title}: done`,
-        html: emailHtml(
-          task.title,
-          block(task.prUrl ? `PR opened: ${task.prUrl}` : "Task completed."),
-          task.prUrl ?? `${appUrl}/tasks/${task.id}`,
-          task.prUrl ? "Open PR" : "Open task",
-        ),
-        headers: await threadHeaders(task.id),
+      ok = await sendTaskEmail(task, {
+        bodyLabel: "Done",
+        bodyHtml: block(task.prUrl ? `PR opened: ${task.prUrl}` : "Task completed."),
+        link: task.prUrl ?? `${appUrl}/tasks/${task.id}`,
+        cta: task.prUrl ? "Open PR" : "Open task",
       });
     } else if (to === "FAILED" && (await flag("notifyOnFailed"))) {
-      ok = await send({
-        subject: `[Waypoint] ${task.title}: failed`,
-        html: emailHtml(
-          task.title,
-          block(
-            `${task.failureCode ?? "FAILURE"}: ${task.failureDetail ?? "see the activity log"}`,
-          ),
-          `${appUrl}/tasks/${task.id}`,
-          "Inspect & retry",
+      ok = await sendTaskEmail(task, {
+        bodyLabel: "Failed",
+        bodyHtml: block(
+          `${task.failureCode ?? "FAILURE"}: ${task.failureDetail ?? "see the activity log"}`,
         ),
-        headers: await threadHeaders(task.id),
+        link: `${appUrl}/tasks/${task.id}`,
+        cta: "Inspect & retry",
       });
     } else if (to === "PAUSED" && task.pauseReason === "BUDGET_EXCEEDED") {
-      ok = await send({
-        subject: `[Waypoint] ${task.title}: token budget exceeded`,
-        html: emailHtml(
-          task.title,
-          block("The task hit its token budget and was paused."),
-          `${appUrl}/tasks/${task.id}`,
-          "Review & resume",
-        ),
-        headers: await threadHeaders(task.id),
+      ok = await sendTaskEmail(task, {
+        bodyLabel: "Token budget exceeded",
+        bodyHtml: block("The task hit its token budget and was paused."),
+        link: `${appUrl}/tasks/${task.id}`,
+        cta: "Review & resume",
       });
     } else {
       // not an email-worthy change (or notifications off) — mark handled
@@ -255,6 +317,7 @@ async function send(opts: {
 /** `bodyHtml` is pre-rendered and already escaped — see block() / findingsList(). */
 function emailHtml(
   title: string,
+  label: string,
   bodyHtml: string,
   link: string,
   cta: string,
@@ -263,7 +326,8 @@ function emailHtml(
   return `<!doctype html>
 <div style="font-family:system-ui,-apple-system,'Segoe UI',sans-serif;max-width:560px;margin:0 auto;padding:24px;color:#18181b">
   <p style="font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:#71717a;margin:0 0 8px">Waypoint</p>
-  <h2 style="font-size:17px;margin:0 0 12px">${escapeHtml(title)}</h2>
+  <h2 style="font-size:17px;margin:0 0 4px">${escapeHtml(title)}</h2>
+  <p style="font-size:13px;color:#71717a;margin:0 0 12px">${escapeHtml(label)}</p>
   ${bodyHtml}
   <p style="margin:18px 0">
     <a href="${link}" style="display:inline-block;background:#4f46e5;color:#fff;text-decoration:none;border-radius:8px;padding:9px 16px;font-size:14px;font-weight:500">${escapeHtml(cta)}</a>
