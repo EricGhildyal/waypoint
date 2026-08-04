@@ -11,7 +11,7 @@ import {
   tool,
 } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
-import { ChecklistTracker } from "./checklist";
+import { ChecklistTracker, TRACKED_TOOLS, clearChecklistTracker } from "./checklist";
 import type { RunnerConfig } from "./config";
 import type { StateStore } from "./state";
 import { StopRequested, type Syncer, sleep } from "./sync";
@@ -118,7 +118,7 @@ export async function runStageAgent(
 
   // A fresh session starts a fresh task list, so one stage's items don't leak
   // into the next. Fix-up rounds resume a session and keep the list they built.
-  if (!opts.resumeSessionId) new ChecklistTracker(state).reset();
+  if (!opts.resumeSessionId) clearChecklistTracker(state);
 
   let sessionId = opts.resumeSessionId;
   let prompt = opts.initialPrompt;
@@ -250,15 +250,17 @@ async function executeQuery(
                 tool_input?: unknown;
                 tool_response?: unknown;
               };
-              const items = checklist.record(
-                String(hook.tool_name ?? ""),
-                hook.tool_input,
-                hook.tool_response,
-              );
+              const toolName = String(hook.tool_name ?? "");
+              const items = checklist.record(toolName, hook.tool_input, hook.tool_response);
               if (items) {
                 sync.setChecklist(items);
                 const done = items.filter((i) => i.state === "completed").length;
                 sync.log("debug", `checklist: ${done}/${items.length} complete`, run.stageRunRef);
+              } else if (TRACKED_TOOLS.has(toolName)) {
+                // A progress tool the tracker could make nothing of — an id it
+                // never saw, a no-op update, or a response shape that drifted.
+                // Say so: a silent hook is what hid this bug in the first place.
+                sync.log("debug", `checklist: no update from ${toolName}`, run.stageRunRef);
               }
               return {};
             },

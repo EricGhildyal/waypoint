@@ -5,6 +5,14 @@ type ItemState = ChecklistItem["state"];
 
 const STATES = new Set<string>(["pending", "in_progress", "completed"]);
 
+/** The tool calls the tracker folds in; anything else is ignored outright. */
+export const TRACKED_TOOLS = new Set<string>(["TodoWrite", "TaskCreate", "TaskUpdate", "TaskList"]);
+
+/** Drop the tracked list — a fresh Agent SDK session starts a fresh task list. */
+export function clearChecklistTracker(state: StateStore): void {
+  state.update({ checklistTracker: [] });
+}
+
 /**
  * Folds the agent's progress-tracking tool calls into a single checklist
  * snapshot for the host (§6 checklist sync).
@@ -23,12 +31,6 @@ export class ChecklistTracker {
 
   constructor(private readonly state: StateStore) {
     this.items = [...(state.get().checklistTracker ?? [])];
-  }
-
-  /** Drop everything — a fresh Agent SDK session starts a fresh task list. */
-  reset(): void {
-    this.items = [];
-    this.persist();
   }
 
   /**
@@ -68,7 +70,16 @@ export class ChecklistTracker {
   private onTaskCreate(toolInput: unknown, toolResponse: unknown): ChecklistItem[] | null {
     const id = createdTaskId(toolResponse);
     const subject = text(record(toolInput)?.subject);
-    if (!id || !subject || this.items.some((item) => item.id === id)) return null;
+    if (!id || !subject) return null;
+
+    // Task ids are per-session sequence numbers, so an id we already hold can
+    // only mean the agent's list restarted (a fix-up round resumes the session
+    // but numbers its tasks from #1 again). Drop that entry and everything
+    // after it: those are the previous round's leftovers, and keeping them
+    // would leave stale text collecting the new round's checkmarks.
+    const clash = this.items.findIndex((item) => item.id === id);
+    if (clash >= 0) this.items.splice(clash);
+
     this.items.push({ id, text: subject, state: "pending" });
     return this.commit();
   }
@@ -111,8 +122,17 @@ export class ChecklistTracker {
 
   // --- plumbing ------------------------------------------------------------
 
-  private commit(): ChecklistItem[] {
+  /**
+   * Persist the new list and hand back a snapshot to send — except an empty
+   * one. The host replaces `Task.checklist` wholesale, so pushing `[]` (the
+   * agent listing an empty task list, deleting its last task, or clearing its
+   * todos) would blank the panel, including the plan-seeded checkboxes that
+   * are all it has to show before the agent starts tracking. Keep the last
+   * non-empty checklist on screen instead.
+   */
+  private commit(): ChecklistItem[] | null {
     this.persist();
+    if (!this.items.length) return null;
     return this.items.map(({ text: t, state: s }) => ({ text: t, state: s }));
   }
 
