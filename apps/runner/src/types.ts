@@ -13,6 +13,11 @@ export interface ChecklistItem {
   state: "pending" | "in_progress" | "completed";
 }
 
+/** A checklist item plus the agent-tool id it came from (runner-local, never sent). */
+export interface TrackedItem extends ChecklistItem {
+  id: string;
+}
+
 export type FindingCategory =
   "readability" | "simplification" | "bug" | "edge_case" | "deviation" | "other";
 
