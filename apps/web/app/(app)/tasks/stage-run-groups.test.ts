@@ -177,17 +177,15 @@ describe("buildSections", () => {
 
   test("post-last-run events go to PR when reached, else stay on the last run", () => {
     const straggler = ev({ type: "LOG", createdAt: iso(40) });
-    const reached = buildSections(
-      makeTask({ status: "OPENING_PR", stageRuns: BOUNCE_RUNS }),
-      [straggler],
-    );
+    const reached = buildSections(makeTask({ status: "OPENING_PR", stageRuns: BOUNCE_RUNS }), [
+      straggler,
+    ]);
     const pr = reached.find((s) => s.kind === "pr");
     expect(pr?.kind === "pr" && pr.items).toHaveLength(1);
 
-    const notReached = buildSections(
-      makeTask({ status: "FAILED", stageRuns: BOUNCE_RUNS }),
-      [straggler],
-    );
+    const notReached = buildSections(makeTask({ status: "FAILED", stageRuns: BOUNCE_RUNS }), [
+      straggler,
+    ]);
     expect(notReached.find((s) => s.kind === "pr")).toBeUndefined();
     const last = notReached.find((s) => s.kind === "run" && s.run.id === "impl-2");
     expect(last?.kind === "run" && last.items).toHaveLength(1);

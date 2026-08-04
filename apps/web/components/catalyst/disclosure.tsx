@@ -29,7 +29,10 @@ export function Disclosure({
 }) {
   return (
     <div
-      className={clsx("overflow-hidden rounded-xl border border-zinc-800 bg-zinc-900/50", className)}
+      className={clsx(
+        "overflow-hidden rounded-xl border border-zinc-800 bg-zinc-900/50",
+        className,
+      )}
     >
       <button
         type="button"
