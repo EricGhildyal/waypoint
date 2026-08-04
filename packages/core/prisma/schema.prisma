@@ -11,6 +11,7 @@ datasource db {
 }
 
 enum TaskStatus {
+  DRAFT // created but not started; waits for a manual start
   QUEUED // eligible, waiting for a slot
   SCHEDULED // waiting for scheduledAt
   BLOCKED // waiting on dependsOn task
