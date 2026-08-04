@@ -9,6 +9,7 @@ bun.lock
 .make/
 .local/
 data/
+.waypoint/
 
 # playwright output
 test-results/
