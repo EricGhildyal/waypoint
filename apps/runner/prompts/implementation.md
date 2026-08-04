@@ -22,7 +22,7 @@ The user approved this plan — follow it exactly. If reality forces a deviation
 
 - **Commit incrementally** with short commit messages that describe the change as you complete plan steps. Never leave the tree dirty at the end of a step.
 - {{IMPL_TEST_RULE}}
-- **Track your progress with TodoWrite** — the user watches your checklist live. Seed it from the plan's checkboxes and keep it updated.
+- **Keep your task list up to date** — with whatever task/todo tool you have, seed it from the plan's checkboxes, mark each item `in_progress` when you start it and `completed` as soon as it's done. The user watches this checklist live.
 - Use `ask_user` liberally: asking a question costs seconds; a wrong direction costs the user's precious tokens. When uncertain about intent, scope, tradeoffs, or data, ask, never guess.
 - Do not push. Do not open PRs. The harness owns git push and PR creation.
 - Do not touch files under `/workspace/.waypoint/` except `pr.md`.

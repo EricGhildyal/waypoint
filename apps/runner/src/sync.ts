@@ -207,6 +207,8 @@ export class Syncer {
         if (body.stage) this.stageMsgs.unshift(body.stage);
         if (body.question) this.question = body.question;
         if (body.rateLimit) this.rateLimit = body.rateLimit;
+        // never clobber a snapshot that landed while this request was in flight
+        if (body.checklist && !this.checklist) this.checklist = body.checklist;
         return;
       }
       const data = (await res.json()) as SyncResponse;
@@ -218,6 +220,7 @@ export class Syncer {
       if (body.stage) this.stageMsgs.unshift(body.stage);
       if (body.question) this.question = body.question;
       if (body.rateLimit) this.rateLimit = body.rateLimit;
+      if (body.checklist && !this.checklist) this.checklist = body.checklist;
     } finally {
       this.inflight = false;
       // there are queued stage messages or an explicit request — go again

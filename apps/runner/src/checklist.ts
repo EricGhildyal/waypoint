@@ -3,7 +3,7 @@ import type { ChecklistItem, TrackedItem } from "./types";
 
 type ItemState = ChecklistItem["state"];
 
-const STATES: ItemState[] = ["pending", "in_progress", "completed"];
+const STATES = new Set<string>(["pending", "in_progress", "completed"]);
 
 /**
  * Folds the agent's progress-tracking tool calls into a single checklist
@@ -59,7 +59,7 @@ export class ChecklistTracker {
     this.items = todos
       .map((todo, i) => {
         const t = record(todo);
-        return { id: `todo-${i}`, text: text(t?.content), state: state(t?.status) };
+        return { id: `todo-${i}`, text: text(t?.content), state: toState(t?.status) };
       })
       .filter((item) => item.text);
     return this.commit();
@@ -103,7 +103,7 @@ export class ChecklistTracker {
     this.items = tasks
       .map((task) => {
         const t = record(task);
-        return { id: text(t?.id), text: text(t?.subject), state: state(t?.status) };
+        return { id: text(t?.id), text: text(t?.subject), state: toState(t?.status) };
       })
       .filter((item) => item.id && item.text);
     return this.commit();
@@ -132,10 +132,10 @@ function text(value: unknown): string {
 }
 
 function isState(value: unknown): value is ItemState {
-  return STATES.includes(value as ItemState);
+  return typeof value === "string" && STATES.has(value);
 }
 
-function state(value: unknown): ItemState {
+function toState(value: unknown): ItemState {
   return isState(value) ? value : "pending";
 }
 
