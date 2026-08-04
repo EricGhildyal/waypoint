@@ -11,10 +11,11 @@ import {
   tool,
 } from "@anthropic-ai/claude-agent-sdk";
 import { z } from "zod";
+import { ChecklistTracker } from "./checklist";
 import type { RunnerConfig } from "./config";
 import type { StateStore } from "./state";
 import { StopRequested, type Syncer, sleep } from "./sync";
-import type { ChecklistItem, StageName, UsageTotals } from "./types";
+import type { StageName, UsageTotals } from "./types";
 
 export class RateLimited extends Error {
   constructor(public readonly resetsAt: string) {
@@ -99,7 +100,7 @@ const ZERO: UsageTotals = {
 /**
  * Execute one stage attempt (§6 SDK invocation pattern): streaming input,
  * permissions bypassed inside the sandbox container, in-process waypoint MCP
- * (ask_user), TodoWrite→checklist hook, transcript JSONL, usage sync, steering,
+ * (ask_user), task-list→checklist hook, transcript JSONL, usage sync, steering,
  * pause via interrupt() + session resume, rate-limit reporting.
  */
 export async function runStageAgent(
@@ -114,6 +115,10 @@ export async function runStageAgent(
     `${opts.stage.toLowerCase()}-${opts.attempt}.jsonl`,
   );
   mkdirSync(path.dirname(transcriptFile), { recursive: true });
+
+  // A fresh session starts a fresh task list, so one stage's items don't leak
+  // into the next. Fix-up rounds resume a session and keep the list they built.
+  if (!opts.resumeSessionId) new ChecklistTracker(state).reset();
 
   let sessionId = opts.resumeSessionId;
   let prompt = opts.initialPrompt;
@@ -190,6 +195,10 @@ async function executeQuery(
     ],
   });
 
+  // reloads its entries from the durable state, so this stays correct across
+  // the pause/resume loop and container restarts alike
+  const checklist = new ChecklistTracker(state);
+
   const usageBase = { ...ZERO, ...readUsageBase(state, run.stageRunRef) };
   const current: UsageTotals = { ...ZERO };
   const pushUsage = () => {
@@ -228,22 +237,28 @@ async function executeQuery(
         : {}),
     },
     hooks: {
+      // No matcher: every tool call is offered to the tracker, which picks out
+      // the progress-tracking ones itself. That keeps us independent of both
+      // matcher-pattern semantics and which task/todo tool family the SDK
+      // hands the agent (§6 checklist sync).
       PostToolUse: [
         {
-          matcher: "TodoWrite",
           hooks: [
             async (hookInput) => {
-              const todos = (hookInput as { tool_input?: { todos?: unknown } }).tool_input?.todos;
-              if (Array.isArray(todos)) {
-                const items: ChecklistItem[] = todos
-                  .map((t: { content?: string; status?: string }) => ({
-                    text: String(t.content ?? ""),
-                    state: (["pending", "in_progress", "completed"].includes(String(t.status))
-                      ? t.status
-                      : "pending") as ChecklistItem["state"],
-                  }))
-                  .filter((t) => t.text);
+              const hook = hookInput as {
+                tool_name?: unknown;
+                tool_input?: unknown;
+                tool_response?: unknown;
+              };
+              const items = checklist.record(
+                String(hook.tool_name ?? ""),
+                hook.tool_input,
+                hook.tool_response,
+              );
+              if (items) {
                 sync.setChecklist(items);
+                const done = items.filter((i) => i.state === "completed").length;
+                sync.log("debug", `checklist: ${done}/${items.length} complete`, run.stageRunRef);
               }
               return {};
             },
