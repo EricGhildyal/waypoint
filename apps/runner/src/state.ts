@@ -1,6 +1,6 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import type { Finding, Findings, StageName, UsageTotals } from "./types";
+import type { Finding, Findings, StageName, TrackedItem, UsageTotals } from "./types";
 
 export type Phase =
   | "SETUP"
@@ -41,6 +41,8 @@ export interface RunnerState {
   consumedAnswers: string[];
   /** cumulative token usage per "STAGE:attempt" (survives container restarts) */
   usageByRun: Record<string, UsageTotals>;
+  /** the agent's task/todo list as last seen by the checklist tracker */
+  checklistTracker: TrackedItem[];
 }
 
 const INITIAL: RunnerState = {
@@ -56,6 +58,7 @@ const INITIAL: RunnerState = {
   testingCycles: 0,
   consumedAnswers: [],
   usageByRun: {},
+  checklistTracker: [],
 };
 
 export class StateStore {

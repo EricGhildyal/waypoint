@@ -221,6 +221,8 @@ export class Syncer {
         if (body.stage) this.stageMsgs.unshift(body.stage);
         if (body.question) this.question = body.question;
         if (body.rateLimit) this.rateLimit = body.rateLimit;
+        // never clobber a snapshot that landed while this request was in flight
+        if (body.checklist && !this.checklist) this.checklist = body.checklist;
         // latest-wins: a warning queued while this sync was inflight is newer
         if (body.rateLimitWarning && !this.rateLimitWarning) {
           this.rateLimitWarning = body.rateLimitWarning;
@@ -236,6 +238,7 @@ export class Syncer {
       if (body.stage) this.stageMsgs.unshift(body.stage);
       if (body.question) this.question = body.question;
       if (body.rateLimit) this.rateLimit = body.rateLimit;
+      if (body.checklist && !this.checklist) this.checklist = body.checklist;
       if (body.rateLimitWarning && !this.rateLimitWarning) {
         this.rateLimitWarning = body.rateLimitWarning;
       }
