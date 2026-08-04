@@ -167,6 +167,7 @@ model Task {
   tokenBudget         Int? // total tokens; pause when exceeded
   branchName          String?
   prUrl               String?
+  emailMessageId      String? // outbound thread-root Message-ID for Gmail threading
   reviewCycles        Int          @default(0)
   testingCycles       Int          @default(0)
   containerId         String?
