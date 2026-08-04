@@ -8,6 +8,7 @@ import {
   Button,
   ButtonGroup,
   Card,
+  Checkbox,
   Field,
   Heading,
   Input,
@@ -31,6 +32,7 @@ interface NewTaskValues {
   prompt: string;
   difficulty: (typeof DIFFICULTIES)[number];
   models: Record<(typeof STAGES)[number], string>;
+  skipTesting: boolean;
   schedule: "now" | "later" | "after";
   scheduledAt: string;
   dependsOnTaskId: string;
@@ -50,6 +52,7 @@ const NewTaskSchema = Yup.object({
     review: Yup.string().required("Required"),
     testing: Yup.string().required("Required"),
   }),
+  skipTesting: Yup.boolean(),
   schedule: Yup.string().oneOf(["now", "later", "after"]).required(),
   scheduledAt: Yup.string().when("schedule", {
     is: "later",
@@ -96,6 +99,7 @@ export function NewTaskForm({
         review: defaultModel,
         testing: defaultModel,
       },
+      skipTesting: false,
       schedule: "now",
       scheduledAt: "",
       dependsOnTaskId: "",
@@ -113,6 +117,7 @@ export function NewTaskForm({
             prompt: values.prompt.trim(),
             difficulty: values.difficulty,
             models: values.models,
+            skipTesting: values.skipTesting,
             scheduledAt:
               values.schedule === "later" && values.scheduledAt
                 ? new Date(values.scheduledAt).toISOString()
@@ -175,6 +180,22 @@ export function NewTaskForm({
             />
           </Field>
 
+          <label htmlFor="skip-testing" className="flex cursor-pointer gap-3">
+            <Checkbox
+              id="skip-testing"
+              className="mt-0.5"
+              checked={formik.values.skipTesting}
+              onChange={(e) => formik.setFieldValue("skipTesting", e.target.checked)}
+            />
+            <span className="min-w-0">
+              <span className="block text-sm font-medium text-zinc-200">Skip browser testing</span>
+              <span className="mt-0.5 block text-xs text-zinc-500">
+                For changes with no UI. Skips the browser (Playwright) testing stage — the
+                project&apos;s test suite and coverage gate still run.
+              </span>
+            </span>
+          </label>
+
           <div>
             <button
               type="button"
@@ -185,18 +206,20 @@ export function NewTaskForm({
             </button>
             {showModels ? (
               <div className="mt-2 grid grid-cols-1 gap-3 sm:grid-cols-2">
-                {STAGES.map((stage) => (
-                  <Field key={stage} label={stage.charAt(0).toUpperCase() + stage.slice(1)}>
-                    <Select {...formik.getFieldProps(`models.${stage}`)}>
-                      {modelOptions.map((m) => (
-                        <option key={m} value={m}>
-                          {m}
-                        </option>
-                      ))}
-                    </Select>
-                    <ErrorText>{fieldError(formik, `models.${stage}`)}</ErrorText>
-                  </Field>
-                ))}
+                {STAGES.filter((stage) => stage !== "testing" || !formik.values.skipTesting).map(
+                  (stage) => (
+                    <Field key={stage} label={stage.charAt(0).toUpperCase() + stage.slice(1)}>
+                      <Select {...formik.getFieldProps(`models.${stage}`)}>
+                        {modelOptions.map((m) => (
+                          <option key={m} value={m}>
+                            {m}
+                          </option>
+                        ))}
+                      </Select>
+                      <ErrorText>{fieldError(formik, `models.${stage}`)}</ErrorText>
+                    </Field>
+                  ),
+                )}
               </div>
             ) : null}
           </div>

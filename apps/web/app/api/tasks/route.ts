@@ -29,6 +29,7 @@ const CreateTaskSchema = z.object({
       testing: z.string().optional(),
     })
     .optional(),
+  skipTesting: z.boolean().optional(),
   scheduledAt: z.string().datetime({ offset: true }).nullable().optional(),
   dependsOnTaskId: z.string().nullable().optional(),
   tokenBudget: z.number().int().positive().nullable().optional(),
@@ -60,6 +61,7 @@ export async function POST(req: NextRequest) {
         implementationModel: body.models?.implementation || defaultModel,
         reviewModel: body.models?.review || defaultModel,
         testingModel: body.models?.testing || defaultModel,
+        skipTesting: body.skipTesting ?? false,
         scheduledAt: body.scheduledAt ? new Date(body.scheduledAt) : null,
         dependsOnTaskId: body.dependsOnTaskId ?? null,
         tokenBudget: body.tokenBudget ?? null,

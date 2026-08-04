@@ -102,6 +102,8 @@ export interface TaskMeta {
   difficulty: "EASY" | "MEDIUM" | "HARD";
   branchName: string;
   verify: boolean;
+  /** Skip the browser-testing agent; the test suite / coverage gate still runs. */
+  skipTesting: boolean;
   models: { planning: string; implementation: string; review: string; testing: string };
   project: {
     name: string;

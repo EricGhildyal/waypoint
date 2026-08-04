@@ -387,6 +387,57 @@ export async function runTesting(
   const { project } = config.meta;
   await sync.stageStart({ action: "start", stage: "TESTING", attempt, model });
 
+  // Per-task skip (§7): no app boot, no browser agent — run the test suite one
+  // final time (when configured), push, and hand off to PR creation.
+  if (config.meta.skipTesting) {
+    sync.log("info", "browser testing skipped for this task — running test suite, then pushing");
+    sync.log(
+      "info",
+      project.testCommand
+        ? "running test + coverage gate"
+        : "no test command configured — skipping test + coverage gate",
+    );
+    const gate = await runTestGate(config);
+    if (!gate.ok) {
+      // a red suite is a TEST finding, not an infra failure — bounce (§7)
+      const findings: Findings = {
+        verdict: "request_changes",
+        findings: [
+          { severity: "high", category: "bug", file: "(tests)", description: gate.feedback },
+        ],
+      };
+      await sync.stageEnd({
+        action: "end",
+        stage: "TESTING",
+        attempt,
+        status: "SUCCEEDED",
+        artifacts: [
+          { name: `test-findings-${attempt}.json`, content: JSON.stringify(findings, null, 2) },
+        ],
+      });
+      await bounceFromTesting(config, sync, state, findings, attempt);
+      return;
+    }
+
+    const findings: Findings = { verdict: "approve", findings: [] };
+    state.update({ phase: "PUSH" });
+    await pushBranch(config, sync);
+    const prMd =
+      (await readWorkspaceFile(config, ".waypoint/pr.md")) ?? "Automated change by Waypoint.";
+    await sync.stageEnd({
+      action: "end",
+      stage: "TESTING",
+      attempt,
+      status: "SUCCEEDED",
+      artifacts: [
+        { name: "pr.md", content: prMd },
+        { name: `test-findings-${attempt}.json`, content: JSON.stringify(findings, null, 2) },
+      ],
+    });
+    state.update({ phase: "AWAIT_STOP" });
+    return;
+  }
+
   sync.log("info", `starting app: ${project.runCommand}`);
   const app = spawnDetached(project.runCommand, {
     cwd: config.workspace,

@@ -55,7 +55,9 @@ export function SectionRow({
           header={
             <RowHeader
               icon={<CircleOutlineIcon className="text-zinc-600" />}
-              label={section.stage === "PR" ? "Open PR" : (STAGE_LABELS[section.stage] ?? section.stage)}
+              label={
+                section.stage === "PR" ? "Open PR" : (STAGE_LABELS[section.stage] ?? section.stage)
+              }
               muted
               meta={<span className="text-xs text-zinc-600">not started</span>}
             />
@@ -101,9 +103,7 @@ export function SectionRow({
                 )
               }
               label="Open PR"
-              meta={
-                opened ? null : <span className="text-xs text-zinc-500">opening…</span>
-              }
+              meta={opened ? null : <span className="text-xs text-zinc-500">opening…</span>}
             />
           }
           bodyClassName="space-y-3 p-4"
@@ -164,8 +164,7 @@ export function SectionRow({
 }
 
 function RunHeader({ run, now }: { run: StageRunView; now: string | null }) {
-  const total =
-    run.inputTokens + run.outputTokens + run.cacheReadTokens + run.cacheCreationTokens;
+  const total = run.inputTokens + run.outputTokens + run.cacheReadTokens + run.cacheCreationTokens;
   const durationEnd = run.endedAt ?? (run.status === "RUNNING" ? now : null);
   return (
     <span className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
@@ -173,9 +172,7 @@ function RunHeader({ run, now }: { run: StageRunView; now: string | null }) {
       <span className="truncate text-sm font-medium text-zinc-200">
         {STAGE_LABELS[run.stage] ?? run.stage} <span className="text-zinc-500">#{run.attempt}</span>
       </span>
-      {run.status === "RUNNING" ? (
-        <span className="text-xs text-indigo-300">running</span>
-      ) : null}
+      {run.status === "RUNNING" ? <span className="text-xs text-indigo-300">running</span> : null}
       {durationEnd ? (
         <span className="text-xs tabular-nums text-zinc-500">
           {formatDuration(run.startedAt, durationEnd)}

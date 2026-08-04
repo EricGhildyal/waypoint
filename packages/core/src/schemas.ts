@@ -193,6 +193,9 @@ export const TaskMetaSchema = z.object({
   difficulty: z.enum(["EASY", "MEDIUM", "HARD"]),
   branchName: z.string(),
   verify: z.boolean(),
+  // Skip the browser-testing agent in the Testing stage; the project's test
+  // suite / coverage gate still runs. Default keeps pre-existing metas valid.
+  skipTesting: z.boolean().default(false),
   models: z.object({
     planning: z.string(),
     implementation: z.string(),

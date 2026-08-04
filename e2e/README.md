@@ -10,7 +10,8 @@ bun run e2e       # runs e2e/specs/*.spec.ts against http://localhost:3000
 - `E2E_BASE_URL` points the suite at another instance.
 - `fixtures/seed.ts` creates the `e2e-fixtures` project and a task pinned to each
   UI state the specs need (running / open question / plan approval / long prompt /
-  blank prompt / failed / finished-with-history). It is idempotent and re-runs
-  before every test, so specs may consume fixture state.
+  blank prompt / failed / finished-with-history / skip-browser-testing). It is
+  idempotent and re-runs before every test, so specs may consume fixture state.
+  It also deletes the tasks specs create through the New Task form.
 - The web app must be running with `AUTH_DEV_BYPASS=1` (the `make run` default);
   the specs do not perform Google sign-in.

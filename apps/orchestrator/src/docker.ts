@@ -97,6 +97,7 @@ async function createTaskContainer(
     difficulty: task.difficulty,
     branchName,
     verify: task.prompt === VERIFY_PROMPT_SENTINEL,
+    skipTesting: task.skipTesting,
     models: {
       planning: task.planningModel,
       implementation: task.implementationModel,
