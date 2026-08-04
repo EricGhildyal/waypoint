@@ -9,6 +9,7 @@ import {
   db,
   emitEvent,
   getNumberSetting,
+  getSetting,
   transition,
 } from "@waypoint/core";
 import {
@@ -30,6 +31,8 @@ const HEARTBEAT_LOST_MS = 5 * 60 * 1000;
 /** consecutive heartbeat losses per task (in-memory; §5 step 6) */
 const heartbeatLosses = new Map<string, number>();
 let lastRetentionDay = "";
+/** the rate-limit window fillSlots has already logged about (log once per window) */
+let rateLimitLoggedFor = 0;
 
 /** One idempotent tick (§5). Runs every 15s, concurrency-never (guarded in index.ts). */
 export async function tick(): Promise<void> {
@@ -88,6 +91,19 @@ async function promoteBlocked(): Promise<void> {
 
 /** 3. Start the oldest QUEUED tasks while there are free slots. */
 async function fillSlots(): Promise<void> {
+  // Every task shares the one Claude Max window (§5) — starting a container
+  // into an exhausted one just burns a slot to hit the same wall.
+  const resetsAt = Date.parse(await getSetting("rateLimitResetsAt"));
+  if (Number.isFinite(resetsAt) && resetsAt > Date.now()) {
+    if (rateLimitLoggedFor !== resetsAt) {
+      rateLimitLoggedFor = resetsAt;
+      console.log(
+        `[tick] Claude usage limit — holding QUEUED tasks until ${new Date(resetsAt).toISOString()}`,
+      );
+    }
+    return;
+  }
+
   const max = await getNumberSetting("maxParallelTasks");
   const active = await db.task.count({ where: { status: { in: ACTIVE_STATUSES } } });
   let free = max - active;

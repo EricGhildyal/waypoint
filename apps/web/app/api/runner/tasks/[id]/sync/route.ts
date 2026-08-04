@@ -15,6 +15,7 @@ import {
   db,
   emitEvent,
   isAutoFixCategory,
+  setSetting,
   transcriptPath,
   transition,
 } from "@waypoint/core";
@@ -98,6 +99,14 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
 
   if (body.stage?.action === "end") await handleStageEnd(task, body.stage, isVerify);
 
+  if (body.rateLimitWarning) {
+    // approaching the window — display only (the yellow banner); nothing pauses
+    await setSetting(
+      "rateLimitWarning",
+      JSON.stringify({ ...body.rateLimitWarning, reportedAt: new Date().toISOString() }),
+    );
+  }
+
   if (body.rateLimit) {
     // every task shares the one Claude Max OAuth token (§5) — when one runner
     // hits the window, rate-limit ALL actively running tasks together; the
@@ -108,6 +117,10 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
     });
     for (const t of running) {
       await safeTransition(t.id, "RATE_LIMITED", { reason: body.rateLimit.resetsAt });
+    }
+    // global: feeds the banner and stops the orchestrator filling slots
+    if (!Number.isNaN(Date.parse(body.rateLimit.resetsAt))) {
+      await setSetting("rateLimitResetsAt", body.rateLimit.resetsAt);
     }
   }
 
