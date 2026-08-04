@@ -52,6 +52,7 @@ export interface TaskDetail {
   failureDetail: string | null;
   checklist: ChecklistItem[] | null;
   models: { planning: string; implementation: string; review: string; testing: string };
+  skipTesting: boolean;
   project: { id: string; name: string; repoUrl: string; defaultBranch: string };
   scheduledAt: string | null;
   dependsOnTaskId: string | null;
@@ -110,6 +111,7 @@ export async function getTaskDetail(taskId: string): Promise<TaskDetail> {
       review: task.reviewModel,
       testing: task.testingModel,
     },
+    skipTesting: task.skipTesting,
     project: {
       id: task.project.id,
       name: task.project.name,

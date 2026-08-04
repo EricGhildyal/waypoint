@@ -64,6 +64,7 @@ function makeTask(over: Partial<TaskDetail>): TaskDetail {
     failureDetail: null,
     checklist: null,
     models: { planning: "m", implementation: "m", review: "m", testing: "m" },
+    skipTesting: false,
     project: { id: "p1", name: "proj", repoUrl: "", defaultBranch: "main" },
     scheduledAt: null,
     dependsOnTaskId: null,

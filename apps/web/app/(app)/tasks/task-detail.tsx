@@ -132,6 +132,7 @@ export function TaskDetailView({ initial, focus }: { initial: TaskDetail; focus:
           <p className="mt-0.5 text-sm text-zinc-500">
             {task.project.name} · {task.difficulty.toLowerCase()} · {formatTokens(task.tokenTotal)}{" "}
             tokens
+            {task.skipTesting ? " · browser testing skipped" : null}
             {task.branchName ? (
               <>
                 {" "}
