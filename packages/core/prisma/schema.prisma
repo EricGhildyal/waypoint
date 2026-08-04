@@ -160,6 +160,7 @@ model Task {
   implementationModel String
   reviewModel         String
   testingModel        String
+  skipTesting         Boolean      @default(false) // skip the browser-testing stage agent; test suite still runs
   scheduledAt         DateTime?
   dependsOnTaskId     String?
   dependsOn           Task?        @relation("deps", fields: [dependsOnTaskId], references: [id])
