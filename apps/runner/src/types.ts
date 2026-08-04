@@ -81,6 +81,8 @@ export interface SyncRequest {
   question?: SyncQuestion;
   stage?: SyncStage;
   rateLimit?: { resetsAt: string };
+  /** SDK `allowed_warning` rate-limit event — display only, never pauses (§5). */
+  rateLimitWarning?: { utilization?: number; resetsAt?: string };
 }
 
 export type InboxItem =

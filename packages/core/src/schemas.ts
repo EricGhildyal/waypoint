@@ -170,6 +170,11 @@ export const SyncRequestSchema = z.object({
     ])
     .optional(),
   rateLimit: z.object({ resetsAt: z.string() }).optional(),
+  // SDK `allowed_warning` rate-limit event — feeds the banner only; it never
+  // pauses tasks and never gates the orchestrator.
+  rateLimitWarning: z
+    .object({ utilization: z.number().optional(), resetsAt: z.string().optional() })
+    .optional(),
 });
 export type SyncRequest = z.infer<typeof SyncRequestSchema>;
 
