@@ -30,6 +30,7 @@ export class Syncer {
   private question: SyncQuestion | null = null;
   private stageMsgs: SyncStage[] = [];
   private rateLimit: { resetsAt: string } | null = null;
+  private rateLimitWarning: { utilization?: number; resetsAt?: string } | null = null;
 
   private steeringQueue: Array<{ id: string; text: string }> = [];
   private answerQueue: Array<{ id: string; questionId: string; answer: string }> = [];
@@ -102,6 +103,14 @@ export class Syncer {
     return this.syncNow();
   }
 
+  /**
+   * Approaching the window (SDK `allowed_warning`) — latest wins, rides the
+   * next 3s sync. Display only: nothing pauses on a warning.
+   */
+  reportRateLimitWarning(warning: { utilization?: number; resetsAt?: string }): void {
+    this.rateLimitWarning = warning;
+  }
+
   // --- questions & answers -------------------------------------------------
 
   /** Send a question and block until its answer arrives via the inbox. */
@@ -155,6 +164,7 @@ export class Syncer {
         !this.question &&
         !this.usage &&
         !this.rateLimit &&
+        !this.rateLimitWarning &&
         !this.checklist
       ) {
         return;
@@ -188,6 +198,10 @@ export class Syncer {
       body.rateLimit = this.rateLimit;
       this.rateLimit = null;
     }
+    if (this.rateLimitWarning) {
+      body.rateLimitWarning = this.rateLimitWarning;
+      this.rateLimitWarning = null;
+    }
 
     try {
       const res = await fetch(
@@ -209,6 +223,10 @@ export class Syncer {
         if (body.rateLimit) this.rateLimit = body.rateLimit;
         // never clobber a snapshot that landed while this request was in flight
         if (body.checklist && !this.checklist) this.checklist = body.checklist;
+        // latest-wins: a warning queued while this sync was inflight is newer
+        if (body.rateLimitWarning && !this.rateLimitWarning) {
+          this.rateLimitWarning = body.rateLimitWarning;
+        }
         return;
       }
       const data = (await res.json()) as SyncResponse;
@@ -221,6 +239,9 @@ export class Syncer {
       if (body.question) this.question = body.question;
       if (body.rateLimit) this.rateLimit = body.rateLimit;
       if (body.checklist && !this.checklist) this.checklist = body.checklist;
+      if (body.rateLimitWarning && !this.rateLimitWarning) {
+        this.rateLimitWarning = body.rateLimitWarning;
+      }
     } finally {
       this.inflight = false;
       // there are queued stage messages or an explicit request — go again

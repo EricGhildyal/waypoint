@@ -5,7 +5,9 @@ import {
   type PermissionResult,
   type SDKAssistantMessage,
   type SDKMessage,
+  type SDKRateLimitInfo,
   type SDKUserMessage,
+  USAGE_LIMIT_ERROR_PREFIXES,
   createSdkMcpServer,
   query,
   tool,
@@ -277,6 +279,20 @@ async function executeQuery(
   let interrupted: "pause" | "stop" | null = null;
   let finished = false;
 
+  // Latest SDK-reported usage/limit state (§5). `rate_limit_event` messages are
+  // the SDK's own view of the Max window — the only source we trust for the
+  // reset time (never the error text). A `rejected` event is the most precise,
+  // so it wins over a plain `allowed`/`allowed_warning` one.
+  let latestLimitInfo: SDKRateLimitInfo | null = null;
+  let rejectedLimitInfo: SDKRateLimitInfo | null = null;
+  /** The SDK's structured "this turn failed because of the limit" marker. */
+  let sawRateLimitMarker = false;
+  let warned = false;
+  const resolveResetsAt = (): string =>
+    resetsAtFrom(rejectedLimitInfo) ??
+    resetsAtFrom(latestLimitInfo) ??
+    new Date(Date.now() + 30 * 60 * 1000).toISOString();
+
   // control + steering watcher
   const watcher = setInterval(() => {
     if (finished || interrupted) return;
@@ -310,7 +326,31 @@ async function executeQuery(
         continue;
       }
 
+      if (message.type === "rate_limit_event") {
+        const info = message.rate_limit_info;
+        latestLimitInfo = info;
+        if (info.status === "rejected") rejectedLimitInfo = info;
+        if (info.status === "allowed_warning") {
+          if (!warned) {
+            warned = true; // the SDK re-emits on every change — one log is enough
+            sync.log(
+              "warn",
+              `approaching the Claude usage limit (${info.utilization ?? "?"}% used)`,
+              run.stageRunRef,
+            );
+          }
+          sync.reportRateLimitWarning({
+            utilization: info.utilization,
+            resetsAt: resetsAtFrom(info) ?? undefined,
+          });
+        }
+        continue;
+      }
+
       if (message.type === "assistant") {
+        // tracks the LAST assistant turn only — a 429 the SDK retried past must
+        // not colour an unrelated failure later in the run
+        sawRateLimitMarker = message.error === "rate_limit";
         forwardAssistantLogs(sync, message, run.stageRunRef);
         const usage = message.message.usage;
         if (usage) {
@@ -344,10 +384,15 @@ async function executeQuery(
         // let the interrupted branch below return paused/stopped.
         if (interrupted) continue;
 
-        if (message.subtype !== "success") {
-          const errText = message.errors.join("\n") || message.subtype;
-          const limit = detectRateLimit(errText);
-          if (limit) return { kind: "rate-limited", resetsAt: limit, sessionId };
+        // A usage-limit result can arrive as subtype "success" with is_error
+        // set — the message then carries its text on `result`, not `errors`.
+        if (message.is_error || message.subtype !== "success") {
+          const errText =
+            (message.subtype === "success" ? message.result : message.errors.join("\n")) ||
+            message.subtype;
+          if (sawRateLimitMarker || isUsageLimitError(errText)) {
+            return { kind: "rate-limited", resetsAt: resolveResetsAt(), sessionId };
+          }
           throw new AgentError(`agent run failed (${message.subtype}): ${errText.slice(0, 1000)}`);
         }
 
@@ -367,8 +412,9 @@ async function executeQuery(
   } catch (err) {
     if (err instanceof StopRequested || err instanceof AgentError) throw err;
     const text = err instanceof Error ? err.message : String(err);
-    const limit = detectRateLimit(text);
-    if (limit) return { kind: "rate-limited", resetsAt: limit, sessionId };
+    if (sawRateLimitMarker || isUsageLimitError(text)) {
+      return { kind: "rate-limited", resetsAt: resolveResetsAt(), sessionId };
+    }
     if (interrupted) {
       return { kind: interrupted === "stop" ? "stopped" : "paused", sessionId };
     }
@@ -407,18 +453,30 @@ function appendTranscript(file: string, message: SDKMessage): void {
   }
 }
 
+/** API-level throttling (429/529) — not a Max-window exhaustion, same handling. */
+const TRANSIENT_LIMIT_RE = /rate limit|rate_limit|overloaded|limit_error/i;
+
 /**
- * Claude Max window exhaustion (§5): the SDK surfaces it as an error string.
- * Parse a reset time when present; otherwise assume a 30-minute backoff.
+ * Classify a failure as a usage/rate limit (§5). Uses the SDK's own canonical
+ * list of usage-limit messages rather than a home-grown regex — the SDK wraps
+ * them ("Claude Code returned an error result: You've hit your limit · resets
+ * 8:50pm (UTC)"), so match by substring. This only CLASSIFIES; the reset time
+ * always comes from `rate_limit_event`, never from this text.
  */
-export function detectRateLimit(text: string): string | null {
-  if (!/usage limit|rate limit|limit reached|limit_error|overloaded/i.test(text)) return null;
-  const epoch = /(?:resets?(?:_at|At)?["':\s|]+)(\d{10,13})/.exec(text)?.[1];
-  if (epoch) {
-    const ms = epoch.length === 13 ? Number(epoch) : Number(epoch) * 1000;
-    return new Date(ms).toISOString();
-  }
-  return new Date(Date.now() + 30 * 60 * 1000).toISOString();
+export function isUsageLimitError(text: string): boolean {
+  if (USAGE_LIMIT_ERROR_PREFIXES.some((prefix) => text.includes(prefix))) return true;
+  return TRANSIENT_LIMIT_RE.test(text);
+}
+
+/**
+ * `SDKRateLimitInfo.resetsAt` is an epoch of undocumented unit — anything below
+ * 1e12 can only be seconds. Returns null when absent or nonsensical.
+ */
+function resetsAtFrom(info: SDKRateLimitInfo | null): string | null {
+  const raw = info?.resetsAt;
+  if (typeof raw !== "number" || !Number.isFinite(raw) || raw <= 0) return null;
+  const date = new Date(raw < 1e12 ? raw * 1000 : raw);
+  return Number.isNaN(date.getTime()) ? null : date.toISOString();
 }
 
 // usage persistence across container restarts -------------------------------
