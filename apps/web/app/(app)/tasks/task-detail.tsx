@@ -216,7 +216,9 @@ export function TaskDetailView({ initial, focus }: { initial: TaskDetail; focus:
       <div className="flex flex-col gap-4 lg:flex-row">
         {/* the stage-run list ends at the in-progress row / its open question,
             with the steer box last — newest content at the bottom */}
-        <div className={clsx("min-w-0 flex-1 space-y-3", view === "checklist" && "hidden lg:block")}>
+        <div
+          className={clsx("min-w-0 flex-1 space-y-3", view === "checklist" && "hidden lg:block")}
+        >
           <StageRunList task={task} events={events} focus={focus} />
           {active ? <SteerForm onSteer={action} /> : null}
         </div>

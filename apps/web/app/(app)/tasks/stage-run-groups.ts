@@ -113,8 +113,7 @@ export function resolveQuestionSection(task: TaskDetail, questionId: string): st
   if (!SENTINEL_RUN_IDS.has(question.stageRunId) && runs.some((r) => r.id === question.stageRunId))
     return question.stageRunId;
   // No event list at seeding time — PR-phase reachability from the task alone.
-  const prReached =
-    task.status === "OPENING_PR" || task.status === "DONE" || Boolean(task.prUrl);
+  const prReached = task.status === "OPENING_PR" || task.status === "DONE" || Boolean(task.prUrl);
   return resolveByTime(runs, prReached, question.createdAt);
 }
 
@@ -151,7 +150,5 @@ function resolveByTime(runs: StageRunView[], prReached: boolean, at: string): st
 const itemRank = (item: RowItem) => (item.kind === "question" ? 1 : 0);
 
 function sortItems(items: RowItem[]): RowItem[] {
-  return items.toSorted((a, b) =>
-    a.at < b.at ? -1 : a.at > b.at ? 1 : itemRank(a) - itemRank(b),
-  );
+  return items.toSorted((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : itemRank(a) - itemRank(b)));
 }

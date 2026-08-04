@@ -180,8 +180,9 @@ export function NewTaskForm({
             />
           </Field>
 
-          <label className="flex cursor-pointer gap-3">
+          <label htmlFor="skip-testing" className="flex cursor-pointer gap-3">
             <Checkbox
+              id="skip-testing"
               className="mt-0.5"
               checked={formik.values.skipTesting}
               onChange={(e) => formik.setFieldValue("skipTesting", e.target.checked)}
@@ -205,20 +206,20 @@ export function NewTaskForm({
             </button>
             {showModels ? (
               <div className="mt-2 grid grid-cols-1 gap-3 sm:grid-cols-2">
-                {STAGES.filter(
-                  (stage) => stage !== "testing" || !formik.values.skipTesting,
-                ).map((stage) => (
-                  <Field key={stage} label={stage.charAt(0).toUpperCase() + stage.slice(1)}>
-                    <Select {...formik.getFieldProps(`models.${stage}`)}>
-                      {modelOptions.map((m) => (
-                        <option key={m} value={m}>
-                          {m}
-                        </option>
-                      ))}
-                    </Select>
-                    <ErrorText>{fieldError(formik, `models.${stage}`)}</ErrorText>
-                  </Field>
-                ))}
+                {STAGES.filter((stage) => stage !== "testing" || !formik.values.skipTesting).map(
+                  (stage) => (
+                    <Field key={stage} label={stage.charAt(0).toUpperCase() + stage.slice(1)}>
+                      <Select {...formik.getFieldProps(`models.${stage}`)}>
+                        {modelOptions.map((m) => (
+                          <option key={m} value={m}>
+                            {m}
+                          </option>
+                        ))}
+                      </Select>
+                      <ErrorText>{fieldError(formik, `models.${stage}`)}</ErrorText>
+                    </Field>
+                  ),
+                )}
               </div>
             ) : null}
           </div>
