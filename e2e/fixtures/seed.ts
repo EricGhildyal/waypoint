@@ -10,6 +10,8 @@
  *   e2e-blank      PAUSED                  -> whitespace-only prompt, Prompt panel empty state
  *   e2e-failed     FAILED                  -> Retry dialog beside the Prompt panel
  *   e2e-history    DONE                    -> full Planning→Impl→Review history + PR row
+ *   e2e-skip       TESTING + skipTesting   -> the Testing skip branch's sync replay
+ *   e2e-skip-red   TESTING + skipTesting   -> same, for the red-suite bounce
  *
  * Idempotent: re-running deletes and recreates the fixture tasks. Task ids are
  * fixed so specs can navigate straight to /tasks/{id} without discovery.
@@ -22,7 +24,13 @@
 import { promises as fs } from "node:fs";
 import { artifactDir, artifactPath } from "@waypoint/core";
 import { db } from "@waypoint/core/db";
-import { FIXTURES, HISTORY_RUNS, PROMPT_FIXTURE_TEXT } from "./ids";
+import {
+  CREATED_TASK_PREFIX,
+  FIXTURES,
+  HISTORY_RUNS,
+  PROMPT_FIXTURE_TEXT,
+  SKIP_TESTING_TOKENS,
+} from "./ids";
 
 const MODELS = {
   planningModel: "claude-fable-5",
@@ -62,8 +70,13 @@ async function main() {
     FIXTURES.blankPromptTaskId,
     FIXTURES.failedTaskId,
     FIXTURES.historyTaskId,
+    FIXTURES.skipTestingTaskId,
+    FIXTURES.skipTestingRedTaskId,
   ];
   await db.task.deleteMany({ where: { id: { in: ids } } });
+  // tasks the specs create through the New Task form — they have real ids, so
+  // they are matched by title instead
+  await db.task.deleteMany({ where: { title: { startsWith: CREATED_TASK_PREFIX } } });
 
   // 1. running task -> Steer form on the Activity tab
   await db.task.create({
@@ -385,6 +398,33 @@ async function main() {
     }),
     "utf8",
   );
+
+  // 9 + 10. "Skip browser testing" tasks parked at the start of the Testing
+  // stage. The runner's skip branch never boots the app or the browser agent —
+  // it runs the test gate, pushes, and reports the stage over the sync
+  // endpoint — so the specs replay those payloads against these two rows: one
+  // for the green suite (→ Opening PR) and one for a red one (→ Implementing).
+  for (const [id, title] of [
+    [FIXTURES.skipTestingTaskId, "E2E — skip browser testing"],
+    [FIXTURES.skipTestingRedTaskId, "E2E — skip browser testing, red suite"],
+  ] as const) {
+    await db.task.create({
+      data: {
+        id,
+        projectId: project.id,
+        createdById: user.id,
+        title,
+        prompt: "Backend-only change with no UI; browser testing is skipped.",
+        difficulty: "EASY",
+        status: "TESTING",
+        currentStage: "TESTING",
+        skipTesting: true,
+        branchName: "waypoint/e2e-skip",
+        runnerToken: SKIP_TESTING_TOKENS[id],
+        ...MODELS,
+      },
+    });
+  }
 
   console.log("[e2e seed] fixtures ready");
 }

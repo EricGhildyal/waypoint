@@ -17,7 +17,27 @@ export const FIXTURES = {
   failedTaskId: "e2e00000-0000-4000-8000-000000000007",
   /** DONE with a full Planning→Impl→Review history, findings, and a PR. */
   historyTaskId: "e2e00000-0000-4000-8000-000000000008",
+  /** skipTesting + TESTING — the skip branch's approve sync is replayed against it. */
+  skipTestingTaskId: "e2e00000-0000-4000-8000-000000000009",
+  /** skipTesting + TESTING — the skip branch's red-suite bounce is replayed against it. */
+  skipTestingRedTaskId: "e2e00000-0000-4000-8000-00000000000a",
 } as const;
+
+/**
+ * Runner tokens for the two skipTesting fixtures. The Testing stage's skip
+ * branch talks to the app over the runner sync endpoint like any other stage,
+ * so the specs replay its exact payloads with these as the Bearer token.
+ */
+export const SKIP_TESTING_TOKENS = {
+  [FIXTURES.skipTestingTaskId]: "e2e-skip-token",
+  [FIXTURES.skipTestingRedTaskId]: "e2e-skip-red-token",
+} as const;
+
+/**
+ * Title prefix for tasks the specs create through the New Task form. The seed
+ * deletes them, so re-runs start from a clean dashboard.
+ */
+export const CREATED_TASK_PREFIX = "E2E — created by spec";
 
 /** Fixed StageRun ids for the history fixture, for transcript-link assertions. */
 export const HISTORY_RUNS = {
