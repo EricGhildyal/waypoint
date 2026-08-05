@@ -33,6 +33,8 @@ const CreateTaskSchema = z.object({
   scheduledAt: z.string().datetime({ offset: true }).nullable().optional(),
   dependsOnTaskId: z.string().nullable().optional(),
   tokenBudget: z.number().int().positive().nullable().optional(),
+  /** Park the task in DRAFT until the user presses Start. Wins over both gates below. */
+  draft: z.boolean().optional(),
 });
 
 export async function POST(req: NextRequest) {
@@ -62,15 +64,19 @@ export async function POST(req: NextRequest) {
         reviewModel: body.models?.review || defaultModel,
         testingModel: body.models?.testing || defaultModel,
         skipTesting: body.skipTesting ?? false,
-        scheduledAt: body.scheduledAt ? new Date(body.scheduledAt) : null,
-        dependsOnTaskId: body.dependsOnTaskId ?? null,
+        // a draft is mutually exclusive with both gates — null them out so a
+        // stale time/dependency can't resurface once the user starts it
+        scheduledAt: body.draft || !body.scheduledAt ? null : new Date(body.scheduledAt),
+        dependsOnTaskId: body.draft ? null : (body.dependsOnTaskId ?? null),
         tokenBudget: body.tokenBudget ?? null,
         createdById: user.id,
       },
     });
 
-    // tasks are born QUEUED; scheduling / dependency gating are transitions
-    if (task.scheduledAt && task.scheduledAt.getTime() > Date.now()) {
+    // tasks are born QUEUED; draft / scheduling / dependency gating are transitions
+    if (body.draft) {
+      await transition(task.id, "DRAFT", { reason: "created as a draft" });
+    } else if (task.scheduledAt && task.scheduledAt.getTime() > Date.now()) {
       await transition(task.id, "SCHEDULED", {
         reason: `scheduled for ${task.scheduledAt.toISOString()}`,
       });

@@ -117,6 +117,9 @@ export function TaskDetailView({ initial, focus }: { initial: TaskDetail; focus:
   const running = ["PLANNING", "IMPLEMENTING", "REVIEWING", "TESTING"].includes(task.status);
   const pausable = running || ["AWAITING_PLAN_APPROVAL", "NEEDS_INPUT"].includes(task.status);
   const active = !["DONE", "CANCELLED", "FAILED"].includes(task.status);
+  // "Start now" queues a draft, and force-queues a scheduled/blocked task ahead
+  // of its gate — once queued the time/dependency is no longer waited on.
+  const startable = ["DRAFT", "SCHEDULED", "BLOCKED"].includes(task.status);
 
   return (
     <div className="space-y-4">
@@ -155,6 +158,11 @@ export function TaskDetailView({ initial, focus }: { initial: TaskDetail; focus:
           </p>
         </div>
         <div className="flex items-center gap-2">
+          {startable ? (
+            <Button small variant="primary" disabled={busy} onClick={() => action("start")}>
+              Start now
+            </Button>
+          ) : null}
           {pausable ? (
             <Button small variant="outline" disabled={busy} onClick={() => action("pause")}>
               Pause
@@ -187,6 +195,12 @@ export function TaskDetailView({ initial, focus }: { initial: TaskDetail; focus:
           </div>
         ) : null}
       </div>
+
+      {task.status === "DRAFT" ? (
+        <p className="text-sm text-zinc-500">
+          Draft — this task won&rsquo;t run until you start it.
+        </p>
+      ) : null}
 
       <PromptPanel prompt={task.prompt} />
 

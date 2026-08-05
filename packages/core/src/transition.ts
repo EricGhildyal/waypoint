@@ -7,7 +7,9 @@ import type { FailureCode, PauseReason, Stage, Task, TaskStatus } from "./genera
  * the orchestrator all share this single write path.
  */
 export const ALLOWED_TRANSITIONS: Record<TaskStatus, TaskStatus[]> = {
-  QUEUED: ["SCHEDULED", "BLOCKED", "PLANNING", "CANCELLED", "FAILED"],
+  // a draft only leaves when the user presses Start (or cancels it)
+  DRAFT: ["QUEUED", "CANCELLED"],
+  QUEUED: ["DRAFT", "SCHEDULED", "BLOCKED", "PLANNING", "CANCELLED", "FAILED"],
   SCHEDULED: ["QUEUED", "CANCELLED"],
   BLOCKED: ["QUEUED", "NEEDS_INPUT", "CANCELLED"],
   PLANNING: [

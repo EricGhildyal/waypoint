@@ -4,6 +4,8 @@ import type { FindingCategory } from "./schemas";
 /**
  * Statuses that count against Setting.maxParallelTasks (§5 tick step 3).
  * Single exported constant — the one source of truth for "task is occupying a slot".
+ * DRAFT is deliberately absent (like QUEUED/SCHEDULED/BLOCKED): a task waiting on
+ * a manual start has no container and must not consume a parallel slot.
  */
 export const ACTIVE_STATUSES: TaskStatus[] = [
   "PLANNING",

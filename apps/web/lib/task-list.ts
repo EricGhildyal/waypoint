@@ -25,6 +25,7 @@ export interface TaskListResponse {
 }
 
 const TASK_STATUSES = new Set([
+  "DRAFT",
   "QUEUED",
   "SCHEDULED",
   "BLOCKED",

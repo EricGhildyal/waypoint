@@ -1,5 +1,5 @@
 import { type NextRequest, NextResponse } from "next/server";
-import { STAGE_TO_STATUS, db, emitEvent, transition } from "@waypoint/core";
+import { STAGE_TO_STATUS, type TaskStatus, db, emitEvent, transition } from "@waypoint/core";
 import { z } from "zod";
 import { ApiError, apiError, assertSameOrigin, requireUser } from "@/lib/api";
 import { getTaskDetail } from "@/lib/task-detail";
@@ -16,8 +16,11 @@ export async function GET(_req: NextRequest, ctx: Params) {
   }
 }
 
+/** Statuses the "Start now" action accepts: a draft, or a task still behind a gate. */
+const STARTABLE_STATUSES = new Set<TaskStatus>(["DRAFT", "SCHEDULED", "BLOCKED"]);
+
 const PatchSchema = z.object({
-  action: z.enum(["pause", "resume", "stop", "cancel", "steer", "retry"]),
+  action: z.enum(["start", "pause", "resume", "stop", "cancel", "steer", "retry"]),
   prompt: z.string().optional(),
 });
 
@@ -31,6 +34,18 @@ export async function PATCH(req: NextRequest, ctx: Params) {
     if (!task) throw new ApiError(404, "task not found");
 
     switch (action) {
+      case "start": {
+        // The manual start for a draft, and the force-start for a task still
+        // sitting behind its time/dependency gate. Queuing is all it does — the
+        // next orchestrator tick picks the task up like any other QUEUED row.
+        // scheduledAt / dependsOnTaskId stay on the row as a record of intent;
+        // promoteScheduled/promoteBlocked filter on status, so neither re-fires.
+        if (!STARTABLE_STATUSES.has(task.status)) {
+          throw new ApiError(409, `cannot start a task that is ${task.status}`);
+        }
+        await transition(id, "QUEUED", { reason: "started by user" });
+        break;
+      }
       case "pause": {
         await transition(id, "PAUSED", { pauseReason: "USER", reason: "paused by user" });
         break;
