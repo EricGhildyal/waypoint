@@ -17,7 +17,7 @@ export async function GET(_req: NextRequest, ctx: Params) {
 }
 
 /** Statuses the "Start now" action accepts: a draft, or a task still behind a gate. */
-const STARTABLE_STATUSES: TaskStatus[] = ["DRAFT", "SCHEDULED", "BLOCKED"];
+const STARTABLE_STATUSES = new Set<TaskStatus>(["DRAFT", "SCHEDULED", "BLOCKED"]);
 
 const PatchSchema = z.object({
   action: z.enum(["start", "pause", "resume", "stop", "cancel", "steer", "retry"]),
@@ -40,7 +40,7 @@ export async function PATCH(req: NextRequest, ctx: Params) {
         // next orchestrator tick picks the task up like any other QUEUED row.
         // scheduledAt / dependsOnTaskId stay on the row as a record of intent;
         // promoteScheduled/promoteBlocked filter on status, so neither re-fires.
-        if (!STARTABLE_STATUSES.includes(task.status)) {
+        if (!STARTABLE_STATUSES.has(task.status)) {
           throw new ApiError(409, `cannot start a task that is ${task.status}`);
         }
         await transition(id, "QUEUED", { reason: "started by user" });
