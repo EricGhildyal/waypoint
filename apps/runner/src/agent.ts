@@ -9,6 +9,7 @@ import {
   type SDKUserMessage,
   USAGE_LIMIT_ERROR_PREFIXES,
   createSdkMcpServer,
+  getSessionInfo,
   query,
   tool,
 } from "@anthropic-ai/claude-agent-sdk";
@@ -79,6 +80,12 @@ export interface StageRunOptions {
   initialPrompt: string;
   /** resume this Agent SDK session (implementation fix-up rounds, restarts) */
   resumeSessionId?: string;
+  /**
+   * Prompt to use instead of `initialPrompt` when `resumeSessionId` turns out
+   * to be gone. `initialPrompt` assumes the resumed conversation's context;
+   * this one must stand on its own (full stage prompt + the notes/findings).
+   */
+  freshPrompt?: string;
   /** attach the Playwright MCP server (testing stage only, §6) */
   playwright?: boolean;
   /**
@@ -118,12 +125,24 @@ export async function runStageAgent(
   );
   mkdirSync(path.dirname(transcriptFile), { recursive: true });
 
+  let resumeSessionId = opts.resumeSessionId;
+  let initialPrompt = opts.initialPrompt;
+  if (resumeSessionId && !(await sessionExists(resumeSessionId, config.workspace))) {
+    sync.log(
+      "warn",
+      `Session with ID ${resumeSessionId} could not be found, starting fresh session...`,
+      stageRunRef,
+    );
+    resumeSessionId = undefined;
+    initialPrompt = opts.freshPrompt ?? opts.initialPrompt;
+  }
+
   // A fresh session starts a fresh task list, so one stage's items don't leak
   // into the next. Fix-up rounds resume a session and keep the list they built.
-  if (!opts.resumeSessionId) clearChecklistTracker(state);
+  if (!resumeSessionId) clearChecklistTracker(state);
 
-  let sessionId = opts.resumeSessionId;
-  let prompt = opts.initialPrompt;
+  let sessionId = resumeSessionId;
+  let prompt = initialPrompt;
 
   for (;;) {
     const outcome = await executeQuery(config, sync, state, opts, {
@@ -450,6 +469,20 @@ function appendTranscript(file: string, message: SDKMessage): void {
     appendFileSync(file, `${JSON.stringify(message)}\n`);
   } catch {
     /* transcript loss is non-fatal */
+  }
+}
+
+/**
+ * Session transcripts live in the container's home dir, not on the /workspace
+ * volume — a recreated container has session ids in state.json whose
+ * transcripts are gone. Ask the SDK before resuming rather than letting the
+ * query fail with "No conversation found with session ID".
+ */
+async function sessionExists(sessionId: string, dir: string): Promise<boolean> {
+  try {
+    return (await getSessionInfo(sessionId, { dir })) !== undefined;
+  } catch {
+    return false; // can't verify → start fresh; a crash is worse than lost context
   }
 }
 
