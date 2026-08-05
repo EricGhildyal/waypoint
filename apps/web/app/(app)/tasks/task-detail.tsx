@@ -2,6 +2,7 @@
 
 import clsx from "clsx";
 import { useFormik } from "formik";
+import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import useSWR, { useSWRConfig } from "swr";
 import * as Yup from "yup";
@@ -22,6 +23,7 @@ import {
   STATUS_COLORS,
   STATUS_LABELS,
   apiFetch,
+  formatTime,
   formatTokens,
   swrFetcher,
 } from "@/lib/format";
@@ -202,6 +204,8 @@ export function TaskDetailView({ initial, focus }: { initial: TaskDetail; focus:
         </p>
       ) : null}
 
+      <GateNote task={task} />
+
       <PromptPanel prompt={task.prompt} />
 
       {task.status === "FAILED" && task.failureCode ? (
@@ -240,6 +244,36 @@ export function TaskDetailView({ initial, focus }: { initial: TaskDetail; focus:
           <ChecklistPanel items={task.checklist ?? []} />
         </aside>
       </div>
+    </div>
+  );
+}
+
+/**
+ * Why this task isn't running yet: the task it waits on and/or the time it
+ * starts. Both gates stay on the row after they clear (and "Start now" leaves
+ * them there deliberately), so once cleared the same line reads as history.
+ */
+function GateNote({ task }: { task: TaskDetail }) {
+  if (!task.dependsOn && !task.scheduledAt) return null;
+  const blocked = task.status === "BLOCKED";
+  const scheduled = task.status === "SCHEDULED";
+
+  return (
+    <div className="space-y-1 text-sm text-zinc-500">
+      {task.dependsOn ? (
+        <p>
+          {blocked ? "Blocked by" : "Depends on"} &ldquo;
+          <Link href={`/tasks/${task.dependsOn.id}`} className="text-indigo-400 hover:underline">
+            {task.dependsOn.title}
+          </Link>
+          &rdquo; ({STATUS_LABELS[task.dependsOn.status] ?? task.dependsOn.status})
+        </p>
+      ) : null}
+      {task.scheduledAt ? (
+        <p>
+          {scheduled ? "Starts" : "Was scheduled for"} {formatTime(task.scheduledAt)}
+        </p>
+      ) : null}
     </div>
   );
 }
