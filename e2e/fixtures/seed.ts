@@ -12,6 +12,7 @@
  *   e2e-history    DONE                    -> full Planning→Impl→Review history + PR row
  *   e2e-skip       TESTING + skipTesting   -> the Testing skip branch's sync replay
  *   e2e-skip-red   TESTING + skipTesting   -> same, for the red-suite bounce
+ *   e2e-findings   NEEDS_INPUT + gate      -> Review cycle card rendered as the approval step
  *
  * Idempotent: re-running deletes and recreates the fixture tasks. Task ids are
  * fixed so specs can navigate straight to /tasks/{id} without discovery.
@@ -72,6 +73,7 @@ async function main() {
     FIXTURES.historyTaskId,
     FIXTURES.skipTestingTaskId,
     FIXTURES.skipTestingRedTaskId,
+    FIXTURES.findingsTaskId,
   ];
   await db.task.deleteMany({ where: { id: { in: ids } } });
   // tasks the specs create through the New Task form — they have real ids, so
@@ -425,6 +427,93 @@ async function main() {
       },
     });
   }
+
+  // 11. open review gate -> the "Review cycle 1" card IS the approval step:
+  // heading + verdict badge + checkbox list + auto-fix list + cycles footer, all
+  // in one box. The question and review-findings-1.json describe the same round.
+  const findingsTask = await db.task.create({
+    data: {
+      id: FIXTURES.findingsTaskId,
+      projectId: project.id,
+      createdById: user.id,
+      title: "E2E — review findings approval",
+      prompt: "Fixture task parked on an open review gate.",
+      difficulty: "MEDIUM",
+      status: "NEEDS_INPUT",
+      currentStage: "REVIEW",
+      reviewCycles: 1,
+      branchName: "waypoint/e2e-findings",
+      ...MODELS,
+      stageRuns: {
+        create: [
+          {
+            stage: "IMPLEMENTATION",
+            attempt: 1,
+            model: MODELS.implementationModel,
+            status: "SUCCEEDED",
+            startedAt: t(0),
+            endedAt: t(10),
+          },
+          {
+            stage: "REVIEW",
+            attempt: 1,
+            model: MODELS.reviewModel,
+            status: "SUCCEEDED",
+            startedAt: t(10),
+            endedAt: t(15),
+          },
+        ],
+      },
+    },
+    include: { stageRuns: true },
+  });
+  const findingsReviewRun = findingsTask.stageRuns.find((r) => r.stage === "REVIEW");
+  if (!findingsReviewRun) throw new Error("findings fixture: review run missing");
+  const gatedFindings = [
+    {
+      severity: "high",
+      category: "bug",
+      file: "apps/web/lib/session.ts",
+      description: "Session cookie is written without the Secure flag.",
+      suggestion: "Set secure: true outside development.",
+    },
+    {
+      severity: "medium",
+      category: "edge_case",
+      file: "apps/web/lib/session.ts",
+      description: "An expired session id falls through to an unhandled null.",
+    },
+  ] as const;
+  const autoFinding = {
+    severity: "low",
+    category: "readability",
+    file: "apps/web/lib/format.ts",
+    description: "formatTokens duplicates the rounding logic twice.",
+  } as const;
+  await db.question.create({
+    data: {
+      taskId: findingsTask.id,
+      stageRunId: findingsReviewRun.id,
+      kind: "FINDINGS_APPROVAL",
+      text: "Review found 2 findings that need your approval.",
+      contextSummary: "Fixture review gate for the e2e suite.",
+      items: [
+        ...gatedFindings.map((f, i) => ({ ...f, number: i + 1, auto: false })),
+        { ...autoFinding, number: null, auto: true },
+      ],
+      status: "OPEN",
+      createdAt: t(15),
+    },
+  });
+  await fs.mkdir(artifactDir(findingsTask.id), { recursive: true });
+  await fs.writeFile(
+    artifactPath(findingsTask.id, "review-findings-1.json"),
+    JSON.stringify({
+      verdict: "request_changes",
+      findings: [...gatedFindings, autoFinding],
+    }),
+    "utf8",
+  );
 
   console.log("[e2e seed] fixtures ready");
 }

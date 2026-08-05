@@ -21,6 +21,8 @@ export const FIXTURES = {
   skipTestingTaskId: "e2e00000-0000-4000-8000-000000000009",
   /** skipTesting + TESTING — the skip branch's red-suite bounce is replayed against it. */
   skipTestingRedTaskId: "e2e00000-0000-4000-8000-00000000000a",
+  /** NEEDS_INPUT on the review gate — the Review cycle card renders as the approval step. */
+  findingsTaskId: "e2e00000-0000-4000-8000-00000000000b",
 } as const;
 
 /**
