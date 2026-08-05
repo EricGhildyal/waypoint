@@ -38,10 +38,25 @@ export async function runPlanning(
   await sync.stageStart({ action: "start", stage: "PLANNING", attempt, model });
 
   const notes = state.get().planNotes;
+  const stagePrompt = renderPrompt("planning", config);
   const prompt = notes
     ? `The user reviewed your plan and requested changes. Revise /workspace/.waypoint/plan.md accordingly (same output contract as before), then stop.\n\nUser's revision notes:\n${notes}`
-    : renderPrompt("planning", config);
+    : stagePrompt;
   const resumeSessionId = notes ? state.get().sessions.PLANNING : undefined;
+  // Used only if that session is gone: the revision prompt above assumes the
+  // prior conversation, so a fresh agent needs the whole stage prompt back.
+  const freshPrompt = notes
+    ? [
+        stagePrompt,
+        "",
+        "---",
+        "",
+        "You already wrote a plan for this task in a previous session that is no longer available. /workspace/.waypoint/plan.md still holds it — read it first and revise it in place to address the user's notes below, rather than starting over.",
+        "",
+        "User's revision notes:",
+        notes,
+      ].join("\n")
+    : undefined;
 
   let nudges = 0;
   const result = await runStageAgent(config, sync, state, {
@@ -50,6 +65,7 @@ export async function runPlanning(
     model,
     initialPrompt: prompt,
     resumeSessionId,
+    freshPrompt,
     onTurnComplete: async () => {
       const plan = await readWorkspaceFile(config, ".waypoint/plan.md");
       if (!plan && nudges < 2) {
@@ -127,13 +143,24 @@ export async function runImplementation(
 
   const pending = state.get().pendingFindings;
   const priorSession = state.get().sessions.IMPLEMENTATION;
-  let prompt: string;
-  if (pending && priorSession) {
-    prompt = fixupPrompt(pending);
-  } else {
-    const plan = (await readWorkspaceFile(config, ".waypoint/plan.md")) ?? "";
-    prompt = renderPrompt("implementation", config, { PLAN: plan });
-  }
+  const plan = (await readWorkspaceFile(config, ".waypoint/plan.md")) ?? "";
+  const stagePrompt = renderPrompt("implementation", config, { PLAN: plan });
+  const fixup = pending && priorSession ? pending : undefined;
+  const prompt = fixup ? fixupPrompt(fixup) : stagePrompt;
+  // Used only if that session is gone: the fix-up prompt assumes the prior
+  // conversation, so a fresh agent needs the plan and stage rules back — plus
+  // a note that the plan is already done, or it would implement it twice.
+  const freshPrompt = fixup
+    ? [
+        stagePrompt,
+        "",
+        "---",
+        "",
+        "The plan above is already implemented and committed on this branch — do not redo it; it is here for context only. The previous session is no longer available, so re-read the relevant code before you change anything. Your job in this round is exactly the following:",
+        "",
+        fixupPrompt(fixup),
+      ].join("\n")
+    : undefined;
 
   let gateRounds = 0;
   let askedPrMd = false;
@@ -143,7 +170,8 @@ export async function runImplementation(
     attempt,
     model,
     initialPrompt: prompt,
-    resumeSessionId: pending ? priorSession : undefined,
+    resumeSessionId: fixup ? priorSession : undefined,
+    freshPrompt,
     onTurnComplete: async () => {
       // Loop: tests green AND changed-line coverage ≥ bar → then format+lint →
       // then pr.md — each failure resumes the same session with feedback (§7).
