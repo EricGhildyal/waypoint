@@ -139,15 +139,13 @@ export function SectionRow({
       // feed. If the artifact is missing or malformed there is nothing to merge
       // into, so the question stays in the feed rather than becoming
       // unanswerable.
-      const approvalQuestion = section.items.reduce<QuestionView | null>(
-        (found, item) =>
+      const latestGate = section.items.findLast(
+        (item) =>
           item.kind === "question" &&
           item.question.kind === "FINDINGS_APPROVAL" &&
-          item.question.items?.length
-            ? item.question
-            : found,
-        null,
+          item.question.items?.length,
       );
+      const approvalQuestion = latestGate?.kind === "question" ? latestGate.question : null;
       const merged =
         approvalQuestion && section.findings.some((f) => f.kind === "review")
           ? approvalQuestion
@@ -168,13 +166,11 @@ export function SectionRow({
           {showPlan ? <PlanSection task={task} focus={focus} /> : null}
           {section.findings.map((f) => {
             const approval = f.kind === "review" ? merged : null;
+            // keeps the ?focus=question-{id} email deeplink landing on the
+            // approval UI now that it lives inside this card
+            const focused = approval !== null && focus === `question-${approval.id}`;
             return (
-              // keeps the ?focus=question-{id} email deeplink landing on the
-              // approval UI now that it lives inside this card
-              <FocusAnchor
-                key={`${f.kind}-${f.attempt}`}
-                highlighted={Boolean(approval) && focus === `question-${approval?.id}`}
-              >
+              <FocusAnchor key={`${f.kind}-${f.attempt}`} highlighted={focused}>
                 <FindingsCard
                   taskId={task.id}
                   view={f}

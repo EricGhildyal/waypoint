@@ -35,17 +35,19 @@ export function FindingsApproval({ taskId, question }: { taskId: string; questio
 
   const open = question.status === "OPEN";
 
-  // Open: default to fixing everything — the review already judged these worth
-  // doing, so the interaction is "untick what you don't want". Answered: this
-  // card is the only record of the round, so the ticks must show what was
-  // actually approved, not the default.
+  // Default to fixing everything — the review already judged these worth doing,
+  // so the interaction is "untick what you don't want".
   const [approved, setApproved] = useState<number[]>(() =>
-    open
-      ? gated.map((item) => item.number).filter((n): n is number => n !== null)
-      : decodeSelection(question.answer ?? "", gated.length),
+    gated.map((item) => item.number).filter((n): n is number => n !== null),
   );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Derived at render, not seeded into state: once the gate is answered this
+  // card is the only record of the round, and the answer can land from the
+  // approval email or another tab while this page is open. Reading it off the
+  // polled question keeps the ticks honest without a reload.
+  const selection = open ? approved : (question.approvedNumbers ?? []);
 
   function toggle(number: number) {
     setApproved((prev) =>
@@ -79,7 +81,7 @@ export function FindingsApproval({ taskId, question }: { taskId: string; questio
         <p className="text-sm font-medium text-zinc-300">
           {open
             ? `${gated.length} need${gated.length === 1 ? "s" : ""} your approval`
-            : `${approved.length}/${gated.length} approved for fixing`}
+            : `${selection.length}/${gated.length} approved for fixing`}
         </p>
         {open ? (
           <button
@@ -114,7 +116,7 @@ export function FindingsApproval({ taskId, question }: { taskId: string; questio
             >
               <Checkbox
                 className="mt-0.5"
-                checked={item.number !== null && approved.includes(item.number)}
+                checked={item.number !== null && selection.includes(item.number)}
                 disabled={!open || busy}
                 onChange={() => item.number !== null && toggle(item.number)}
               />
@@ -184,23 +186,4 @@ export function FindingsApproval({ taskId, question }: { taskId: string; questio
 function encodeSelection(approved: number[]): string {
   const sorted = approved.toSorted((a, b) => a - b);
   return `Fix: ${sorted.length ? sorted.join(", ") : "none"}`;
-}
-
-/**
- * Local copy of core's parseFindingSelection — same Prisma-in-the-bundle
- * reason as encodeSelection above. Answers reach us from this component
- * ("Fix: 1, 3" / "Fix: none") but also from a reply to the approval email, so
- * this has to tolerate the same free text the server does.
- */
-function decodeSelection(answer: string, count: number): number[] {
-  if (/\bnone\b|\bskip\b|\bno(ne|thing)?\b/i.test(answer) && !/\d/.test(answer)) return [];
-  if (/\ball\b/i.test(answer) && !/\d/.test(answer)) {
-    return Array.from({ length: count }, (_, i) => i + 1);
-  }
-  const picked = new Set<number>();
-  for (const match of answer.matchAll(/\d+/g)) {
-    const n = Number(match[0]);
-    if (n >= 1 && n <= count) picked.add(n);
-  }
-  return [...picked].toSorted((a, b) => a - b);
 }

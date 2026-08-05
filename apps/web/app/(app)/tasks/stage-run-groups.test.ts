@@ -43,6 +43,7 @@ function question(
     contextSummary: "",
     options: null,
     items: null,
+    approvedNumbers: null,
     status: "OPEN",
     answer: null,
     answeredVia: null,

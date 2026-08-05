@@ -1,5 +1,11 @@
 import { promises as fs } from "node:fs";
-import { FindingsSchema, artifactDir, artifactPath, db } from "@waypoint/core";
+import {
+  FindingsSchema,
+  artifactDir,
+  artifactPath,
+  db,
+  parseFindingSelection,
+} from "@waypoint/core";
 import type { ChecklistItem, FindingApprovalItem, Findings } from "@waypoint/core";
 import { ApiError } from "./api";
 
@@ -27,6 +33,12 @@ export interface QuestionView {
   options: string[] | null;
   /** FINDINGS_APPROVAL only — the checkbox list. */
   items: FindingApprovalItem[] | null;
+  /**
+   * FINDINGS_APPROVAL only — the gated finding numbers an answered gate
+   * approved, decoded here rather than in the browser so the client keeps no
+   * second copy of parseFindingSelection. Null while the gate is still open.
+   */
+  approvedNumbers: number[] | null;
   status: string;
   answer: string | null;
   answeredVia: string | null;
@@ -142,20 +154,27 @@ export async function getTaskDetail(taskId: string): Promise<TaskDetail> {
       startedAt: r.startedAt.toISOString(),
       endedAt: r.endedAt?.toISOString() ?? null,
     })),
-    questions: task.questions.map((q) => ({
-      id: q.id,
-      stageRunId: q.stageRunId,
-      kind: q.kind,
-      text: q.text,
-      contextSummary: q.contextSummary,
-      options: (q.options as string[] | null) ?? null,
-      items: (q.items as FindingApprovalItem[] | null) ?? null,
-      status: q.status,
-      answer: q.answer,
-      answeredVia: q.answeredVia,
-      createdAt: q.createdAt.toISOString(),
-      answeredAt: q.answeredAt?.toISOString() ?? null,
-    })),
+    questions: task.questions.map((q) => {
+      const items = (q.items as FindingApprovalItem[] | null) ?? null;
+      return {
+        id: q.id,
+        stageRunId: q.stageRunId,
+        kind: q.kind,
+        text: q.text,
+        contextSummary: q.contextSummary,
+        options: (q.options as string[] | null) ?? null,
+        items,
+        approvedNumbers:
+          q.kind === "FINDINGS_APPROVAL" && q.status !== "OPEN" && q.answer && items
+            ? parseFindingSelection(q.answer, items.filter((i) => !i.auto).length)
+            : null,
+        status: q.status,
+        answer: q.answer,
+        answeredVia: q.answeredVia,
+        createdAt: q.createdAt.toISOString(),
+        answeredAt: q.answeredAt?.toISOString() ?? null,
+      };
+    }),
     plan,
     prBody,
     findings,
