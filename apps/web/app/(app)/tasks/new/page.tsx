@@ -17,7 +17,7 @@ export default async function NewTaskPage({
       where: { status: { notIn: ["DONE", "FAILED", "CANCELLED"] } },
       orderBy: { createdAt: "desc" },
       take: 50,
-      select: { id: true, title: true },
+      select: { id: true, title: true, status: true },
     }),
   ]);
   let models: string[] = [];

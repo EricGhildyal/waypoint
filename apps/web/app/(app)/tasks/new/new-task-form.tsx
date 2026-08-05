@@ -16,7 +16,7 @@ import {
   Textarea,
 } from "@/components/catalyst";
 import { ErrorText, fieldError } from "@/components/form-utils";
-import { apiFetch } from "@/lib/format";
+import { apiFetch, STATUS_LABELS } from "@/lib/format";
 
 const DIFFICULTIES = ["EASY", "MEDIUM", "HARD"] as const;
 const STAGES = ["planning", "implementation", "review", "testing"] as const;
@@ -80,7 +80,7 @@ export function NewTaskForm({
   projects: Array<{ id: string; name: string }>;
   models: string[];
   defaultModel: string;
-  dependencyCandidates: Array<{ id: string; title: string }>;
+  dependencyCandidates: Array<{ id: string; title: string; status: string }>;
   initialProjectId?: string;
 }) {
   const router = useRouter();
@@ -243,7 +243,7 @@ export function NewTaskForm({
                     <option value="">Select task…</option>
                     {dependencyCandidates.map((t) => (
                       <option key={t.id} value={t.id}>
-                        {t.title}
+                        {`${t.title} (${STATUS_LABELS[t.status] ?? t.status})`}
                       </option>
                     ))}
                   </Select>
