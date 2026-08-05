@@ -1,6 +1,7 @@
 import type { BadgeColor } from "@/components/catalyst";
 
 export const STATUS_COLORS: Record<string, BadgeColor> = {
+  DRAFT: "zinc",
   QUEUED: "zinc",
   SCHEDULED: "zinc",
   BLOCKED: "amber",
@@ -19,6 +20,7 @@ export const STATUS_COLORS: Record<string, BadgeColor> = {
 };
 
 export const STATUS_LABELS: Record<string, string> = {
+  DRAFT: "Draft",
   QUEUED: "Queued",
   SCHEDULED: "Scheduled",
   BLOCKED: "Blocked",

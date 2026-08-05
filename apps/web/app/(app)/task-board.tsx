@@ -49,7 +49,7 @@ const SECTIONS: Array<{
   {
     key: "pending",
     title: "Pending",
-    hint: "Queued, scheduled, blocked, rate-limited and everything currently running.",
+    hint: "Drafts, queued, scheduled, blocked, rate-limited and everything currently running.",
     accent: "bg-sky-500",
     collapsedByDefault: false,
   },
@@ -84,6 +84,10 @@ function sectionFor(task: TaskListItem, now: number): SectionKey {
     case "DONE":
     case "CANCELLED":
       return "complete";
+    // a draft needs a deliberate Start, but it is parked by choice — not a
+    // problem to triage, so it sits with the rest of the waiting work
+    case "DRAFT":
+      return "pending";
     default:
       // QUEUED, SCHEDULED, BLOCKED, RATE_LIMITED, OPENING_PR and the four
       // working statuses all just need time, not attention
