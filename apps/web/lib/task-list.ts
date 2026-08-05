@@ -17,6 +17,10 @@ export interface TaskListItem {
   createdAt: string;
   /** Set on DONE / FAILED / CANCELLED — drives the board's "recent" split. */
   endedAt: string | null;
+  /** The task this one waits on while BLOCKED. */
+  dependsOn: { id: string; title: string } | null;
+  /** When a SCHEDULED task will start. */
+  scheduledAt: string | null;
 }
 
 export interface TaskListResponse {
@@ -59,7 +63,10 @@ export async function getTaskList(filter: {
   const [tasks, sums, needsInput, running, failed] = await Promise.all([
     db.task.findMany({
       where,
-      include: { project: { select: { name: true } } },
+      include: {
+        project: { select: { name: true } },
+        dependsOn: { select: { id: true, title: true } },
+      },
       orderBy: { createdAt: "desc" },
       take: 200,
     }),
@@ -108,6 +115,8 @@ export async function getTaskList(filter: {
         tokenTotal: totals.get(t.id) ?? 0,
         createdAt: t.createdAt.toISOString(),
         endedAt: t.endedAt?.toISOString() ?? null,
+        dependsOn: t.dependsOn ? { id: t.dependsOn.id, title: t.dependsOn.title } : null,
+        scheduledAt: t.scheduledAt?.toISOString() ?? null,
       };
     }),
     counts: { needsInput, running, failed },

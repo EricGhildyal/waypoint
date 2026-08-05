@@ -55,7 +55,8 @@ export interface TaskDetail {
   skipTesting: boolean;
   project: { id: string; name: string; repoUrl: string; defaultBranch: string };
   scheduledAt: string | null;
-  dependsOnTaskId: string | null;
+  /** The task this one waits on (BLOCKED), kept as history once the gate clears. */
+  dependsOn: { id: string; title: string; status: string } | null;
   tokenBudget: number | null;
   tokenTotal: number;
   branchName: string | null;
@@ -77,6 +78,7 @@ export async function getTaskDetail(taskId: string): Promise<TaskDetail> {
     where: { id: taskId },
     include: {
       project: true,
+      dependsOn: { select: { id: true, title: true, status: true } },
       stageRuns: { orderBy: { startedAt: "asc" } },
       questions: { orderBy: { createdAt: "desc" } },
     },
@@ -119,7 +121,9 @@ export async function getTaskDetail(taskId: string): Promise<TaskDetail> {
       defaultBranch: task.project.defaultBranch,
     },
     scheduledAt: task.scheduledAt?.toISOString() ?? null,
-    dependsOnTaskId: task.dependsOnTaskId,
+    dependsOn: task.dependsOn
+      ? { id: task.dependsOn.id, title: task.dependsOn.title, status: task.dependsOn.status }
+      : null,
     tokenBudget: task.tokenBudget,
     tokenTotal,
     branchName: task.branchName,
