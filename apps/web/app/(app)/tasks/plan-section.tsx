@@ -7,8 +7,8 @@ import * as Yup from "yup";
 import { Button, Card, Disclosure, Subheading, Textarea } from "@/components/catalyst";
 import { ErrorText, fieldError } from "@/components/form-utils";
 import { Markdown } from "@/components/markdown";
-import { apiFetch } from "@/lib/format";
-import type { TaskDetail } from "@/lib/task-detail";
+import { apiFetch, formatTime } from "@/lib/format";
+import type { QuestionView, TaskDetail } from "@/lib/task-detail";
 import { FocusAnchor } from "./focus-anchor";
 
 const RevisionSchema = Yup.object({
@@ -18,7 +18,8 @@ const RevisionSchema = Yup.object({
 /**
  * The plan inside the Planning stage row: fully expanded with the approval form
  * while a PLAN_APPROVAL question is open; a collapsed "View plan" disclosure
- * once the plan is approved.
+ * once the plan is approved. Once answered, PlanReply below shows what you
+ * replied — the approval or the revision notes that reshaped the plan.
  */
 export function PlanSection({ task, focus }: { task: TaskDetail; focus: string | null }) {
   const { mutate } = useSWRConfig();
@@ -126,5 +127,25 @@ export function PlanSection({ task, focus }: { task: TaskDetail; focus: string |
         </Card>
       </div>
     </FocusAnchor>
+  );
+}
+
+/**
+ * The answer to a PLAN_APPROVAL question — "approve", or the revision notes that
+ * sent planning round another lap. Rendered in green at the bottom of the
+ * Planning row that asked, mirroring the answered-question UI.
+ */
+export function PlanReply({ question }: { question: QuestionView }) {
+  if (!question.answer) return null;
+  return (
+    <div className="rounded-lg border border-green-900/50 bg-green-950/20 p-3">
+      <p className="text-xs text-green-400">
+        Your reply · via {question.answeredVia?.toLowerCase() ?? "?"} ·{" "}
+        {formatTime(question.answeredAt ?? question.createdAt)}
+      </p>
+      <p className="whitespace-pre-wrap wrap-break-word text-sm text-green-200">
+        {question.answer}
+      </p>
+    </div>
   );
 }

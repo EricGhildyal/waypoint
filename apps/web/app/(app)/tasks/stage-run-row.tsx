@@ -18,7 +18,7 @@ import { EventLine } from "./event-line";
 import { FindingsApproval } from "./findings-approval";
 import { FindingsCard } from "./findings-card";
 import { FocusAnchor } from "./focus-anchor";
-import { PlanSection } from "./plan-section";
+import { PlanReply, PlanSection } from "./plan-section";
 import { QuestionCard } from "./question-card";
 import type { FeedEvent, RowItem, Section } from "./stage-run-groups";
 import { TokenMixBar } from "./token-mix-bar";
@@ -150,6 +150,12 @@ export function SectionRow({
         approvalQuestion && section.findings.some((f) => f.kind === "review")
           ? approvalQuestion
           : null;
+      // an answered plan approval shows the reply the user sent — on the row
+      // that asked for it, so each revision round keeps its own notes
+      const planReplies = section.items
+        .filter((item) => item.kind === "question")
+        .map((item) => item.question)
+        .filter((q) => q.kind === "PLAN_APPROVAL" && q.status === "ANSWERED");
       return (
         <Disclosure
           open={open}
@@ -180,6 +186,16 @@ export function SectionRow({
               </FocusAnchor>
             );
           })}
+          {planReplies.map((q) => (
+            <PlanReply key={q.id} question={q} />
+          ))}
+          {section.findings.map((f) => (
+            <FindingsCard
+              key={`${f.kind}-${f.attempt}`}
+              view={f}
+              cyclesUsed={f.kind === "review" ? task.reviewCycles : task.testingCycles}
+            />
+          ))}
           <p className="text-xs text-zinc-500">
             <a
               className="text-indigo-400 hover:underline"
