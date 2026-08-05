@@ -96,6 +96,18 @@ function sectionFor(task: TaskListItem, now: number): SectionKey {
 }
 
 /**
+ * What a task is waiting on, for the boards' Stage column. Only rendered while
+ * the gate is actually holding the task — the detail page keeps showing it as
+ * history afterwards, the board stays compact.
+ */
+function gateText(task: TaskListItem): string | null {
+  if (task.status === "BLOCKED" && task.dependsOn) return `Blocked by “${task.dependsOn.title}”`;
+  if (task.status === "SCHEDULED" && task.scheduledAt)
+    return `Starts ${formatTime(task.scheduledAt)}`;
+  return null;
+}
+
+/**
  * The sectioned task list, shared by the dashboard and a project's detail page.
  * Pass `projects` to offer the project filter; pass `projectId` to scope the
  * board to one project (which suppresses that filter).
@@ -272,8 +284,8 @@ function TaskTable({ tasks }: { tasks: TaskListItem[] }) {
               </TCell>
               <TCell className="text-zinc-400">{t.projectName}</TCell>
               <TCell className="max-w-64">
-                <div className="text-zinc-300">
-                  {t.currentStage ? STAGE_LABELS[t.currentStage] : "—"}
+                <div className="truncate text-zinc-300">
+                  {t.currentStage ? STAGE_LABELS[t.currentStage] : (gateText(t) ?? "—")}
                 </div>
                 {t.currentChecklistItem ? (
                   <div className="truncate text-xs text-zinc-500">{t.currentChecklistItem}</div>
@@ -313,6 +325,9 @@ function TaskCards({ tasks }: { tasks: TaskListItem[] }) {
           ) : null}
           {t.currentChecklistItem ? (
             <div className="mt-1.5 truncate text-sm text-zinc-400">▸ {t.currentChecklistItem}</div>
+          ) : null}
+          {gateText(t) ? (
+            <div className="mt-1.5 truncate text-sm text-zinc-400">{gateText(t)}</div>
           ) : null}
         </Link>
       ))}
