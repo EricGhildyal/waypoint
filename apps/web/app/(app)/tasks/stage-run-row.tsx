@@ -16,7 +16,7 @@ import { EventLine } from "./event-line";
 import { FindingsApproval } from "./findings-approval";
 import { FindingsCard } from "./findings-card";
 import { FocusAnchor } from "./focus-anchor";
-import { PlanSection } from "./plan-section";
+import { PlanReply, PlanSection } from "./plan-section";
 import { QuestionCard } from "./question-card";
 import type { FeedEvent, RowItem, Section } from "./stage-run-groups";
 import { TokenMixBar } from "./token-mix-bar";
@@ -131,6 +131,12 @@ export function SectionRow({
     }
     case "run": {
       const { run } = section;
+      // an answered plan approval shows the reply the user sent — on the row
+      // that asked for it, so each revision round keeps its own notes
+      const planReplies = section.items
+        .filter((item) => item.kind === "question")
+        .map((item) => item.question)
+        .filter((q) => q.kind === "PLAN_APPROVAL" && q.status === "ANSWERED");
       return (
         <Disclosure
           open={open}
@@ -140,6 +146,9 @@ export function SectionRow({
         >
           <ItemFeed taskId={task.id} items={section.items} focus={focus} />
           {showPlan ? <PlanSection task={task} focus={focus} /> : null}
+          {planReplies.map((q) => (
+            <PlanReply key={q.id} question={q} />
+          ))}
           {section.findings.map((f) => (
             <FindingsCard
               key={`${f.kind}-${f.attempt}`}
@@ -252,8 +261,9 @@ function ItemFeed({
   items: RowItem[];
   focus: string | null;
 }) {
-  // Plan approvals never render as question cards — the PlanSection carries the
-  // plan markdown and its approve/request-changes form instead.
+  // Plan approvals never render as question cards: an open one belongs to the
+  // PlanSection (plan markdown + approve/request-changes form), and an answered
+  // one renders as a PlanReply at the bottom of the row.
   const visible = items.filter(
     (item) => item.kind !== "question" || item.question.kind !== "PLAN_APPROVAL",
   );
