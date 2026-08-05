@@ -1,16 +1,38 @@
 "use client";
 
+import clsx from "clsx";
 import { Badge, Card, Subheading } from "@/components/catalyst";
-import type { FindingsView } from "@/lib/task-detail";
+import type { FindingsView, QuestionView } from "@/lib/task-detail";
+import { FindingsApproval } from "./findings-approval";
 
 // Caps mirror REVIEW_CYCLE_CAP / TESTING_CYCLE_CAP in @waypoint/core, which
 // the client bundle can't import without dragging in Prisma.
 const CYCLE_CAPS = { review: 3, test: 2 } as const;
 
-/** One review/test findings artifact, rendered inside its stage-run row. */
-export function FindingsCard({ view, cyclesUsed }: { view: FindingsView; cyclesUsed: number }) {
+/**
+ * One review/test findings artifact, rendered inside its stage-run row.
+ *
+ * A review round that is (or was) gated on a FINDINGS_APPROVAL question renders
+ * as this one card: the approval checkbox list replaces the read-only list
+ * rather than sitting in a second box beside it. Nothing is lost — the
+ * question's `items` are every finding in the artifact (gated ones numbered,
+ * auto-fixed ones shown read-only under "Fixed automatically").
+ */
+export function FindingsCard({
+  taskId,
+  view,
+  cyclesUsed,
+  approval,
+}: {
+  taskId: string;
+  view: FindingsView;
+  cyclesUsed: number;
+  /** The round's review gate, when it has one — this card becomes it. */
+  approval?: QuestionView | null;
+}) {
+  const gated = approval?.items?.length ? approval : null;
   return (
-    <Card className="space-y-2">
+    <Card className={clsx("space-y-2", gated?.status === "OPEN" && "border-amber-900/50")}>
       <div className="flex items-center gap-2">
         <Subheading>
           {view.kind === "review" ? "Review" : "Testing"} cycle {view.attempt}
@@ -19,7 +41,9 @@ export function FindingsCard({ view, cyclesUsed }: { view: FindingsView; cyclesU
           {view.findings.verdict === "approve" ? "Approved" : "Changes requested"}
         </Badge>
       </div>
-      {view.findings.findings.length === 0 ? (
+      {gated ? (
+        <FindingsApproval taskId={taskId} question={gated} />
+      ) : view.findings.findings.length === 0 ? (
         <p className="text-sm text-zinc-500">No findings.</p>
       ) : (
         <ul className="space-y-2">

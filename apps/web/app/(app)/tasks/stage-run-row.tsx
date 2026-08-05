@@ -1,12 +1,14 @@
 "use client";
 
-import type { ReactNode } from "react";
+import { Fragment, type ReactNode } from "react";
 import {
+  Card,
   CheckIcon,
   CircleOutlineIcon,
   Disclosure,
   MinusIcon,
   Spinner,
+  Subheading,
   XMarkIcon,
 } from "@/components/catalyst";
 import { Markdown } from "@/components/markdown";
@@ -131,6 +133,25 @@ export function SectionRow({
     }
     case "run": {
       const { run } = section;
+      // The review gate and the review findings artifact describe the same
+      // round, so they render as one card (see FindingsCard). Take the newest
+      // gate in the section; a rare second one keeps rendering inline in the
+      // feed. If the artifact is missing or malformed there is nothing to merge
+      // into, so the question stays in the feed rather than becoming
+      // unanswerable.
+      const approvalQuestion = section.items.reduce<QuestionView | null>(
+        (found, item) =>
+          item.kind === "question" &&
+          item.question.kind === "FINDINGS_APPROVAL" &&
+          item.question.items?.length
+            ? item.question
+            : found,
+        null,
+      );
+      const merged =
+        approvalQuestion && section.findings.some((f) => f.kind === "review")
+          ? approvalQuestion
+          : null;
       return (
         <Disclosure
           open={open}
@@ -138,15 +159,34 @@ export function SectionRow({
           header={<RunHeader run={run} now={now} />}
           bodyClassName="space-y-3 p-4"
         >
-          <ItemFeed taskId={task.id} items={section.items} focus={focus} />
+          <ItemFeed
+            taskId={task.id}
+            items={section.items}
+            focus={focus}
+            hiddenQuestionId={merged?.id ?? null}
+          />
           {showPlan ? <PlanSection task={task} focus={focus} /> : null}
-          {section.findings.map((f) => (
-            <FindingsCard
-              key={`${f.kind}-${f.attempt}`}
-              view={f}
-              cyclesUsed={f.kind === "review" ? task.reviewCycles : task.testingCycles}
-            />
-          ))}
+          {section.findings.map((f) => {
+            const approval = f.kind === "review" ? merged : null;
+            const card = (
+              <FindingsCard
+                taskId={task.id}
+                view={f}
+                cyclesUsed={f.kind === "review" ? task.reviewCycles : task.testingCycles}
+                approval={approval}
+              />
+            );
+            const key = `${f.kind}-${f.attempt}`;
+            // keeps the ?focus=question-{id} email deeplink landing on the
+            // approval UI now that it lives inside this card
+            return approval ? (
+              <FocusAnchor key={key} highlighted={focus === `question-${approval.id}`}>
+                {card}
+              </FocusAnchor>
+            ) : (
+              <Fragment key={key}>{card}</Fragment>
+            );
+          })}
           <p className="text-xs text-zinc-500">
             <a
               className="text-indigo-400 hover:underline"
@@ -247,15 +287,21 @@ function ItemFeed({
   taskId,
   items,
   focus,
+  hiddenQuestionId = null,
 }: {
   taskId: string;
   items: RowItem[];
   focus: string | null;
+  /** The review gate merged into this row's FindingsCard, if any. */
+  hiddenQuestionId?: string | null;
 }) {
   // Plan approvals never render as question cards — the PlanSection carries the
-  // plan markdown and its approve/request-changes form instead.
+  // plan markdown and its approve/request-changes form instead. Same for the
+  // review gate that FindingsCard has absorbed.
   const visible = items.filter(
-    (item) => item.kind !== "question" || item.question.kind !== "PLAN_APPROVAL",
+    (item) =>
+      item.kind !== "question" ||
+      (item.question.kind !== "PLAN_APPROVAL" && item.question.id !== hiddenQuestionId),
   );
   if (!visible.length) return null;
   const chunks: Chunk[] = [];
@@ -278,13 +324,18 @@ function ItemFeed({
             ))}
           </div>
         ) : // the review gate answers through its own checkbox list (§7), not the
-        // free-text form every other question kind uses
+        // free-text form every other question kind uses. Fallback only: normally
+        // this renders inside the round's FindingsCard, but a missing or
+        // malformed findings artifact leaves nothing to merge into.
         chunk.question.kind === "FINDINGS_APPROVAL" && chunk.question.items?.length ? (
           <FocusAnchor
             key={chunk.question.id}
             highlighted={focus === `question-${chunk.question.id}`}
           >
-            <FindingsApproval taskId={taskId} question={chunk.question} />
+            <Card className="space-y-3 border-amber-900/50">
+              <Subheading>Review findings</Subheading>
+              <FindingsApproval taskId={taskId} question={chunk.question} />
+            </Card>
           </FocusAnchor>
         ) : (
           <QuestionCard

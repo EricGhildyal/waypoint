@@ -3,7 +3,7 @@
 import clsx from "clsx";
 import { useState } from "react";
 import { useSWRConfig } from "swr";
-import { Badge, Button, Card, Checkbox, Subheading } from "@/components/catalyst";
+import { Badge, Button, Checkbox } from "@/components/catalyst";
 import { apiFetch } from "@/lib/format";
 import type { QuestionView } from "@/lib/task-detail";
 
@@ -23,6 +23,9 @@ const CATEGORY_LABELS: Record<string, string> = {
  * fix on its own authority. Only ticked findings are sent back to the
  * implementation session — everything left unticked is dropped. Readability and
  * simplification findings ride along automatically and are shown read-only.
+ *
+ * Card-less on purpose: this is the body of the round's `Review cycle N` card
+ * (see findings-card.tsx), which supplies the heading and verdict badge.
  */
 export function FindingsApproval({ taskId, question }: { taskId: string; question: QuestionView }) {
   const { mutate } = useSWRConfig();
@@ -66,11 +69,11 @@ export function FindingsApproval({ taskId, question }: { taskId: string; questio
   const allSelected = approved.length === gated.length;
 
   return (
-    <Card className="space-y-3 border-amber-900/50">
+    <div className="space-y-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <Subheading>
-          Review findings — {gated.length} need{gated.length === 1 ? "s" : ""} your approval
-        </Subheading>
+        <p className="text-sm font-medium text-zinc-300">
+          {gated.length} need{gated.length === 1 ? "s" : ""} your approval
+        </p>
         {open ? (
           <button
             type="button"
@@ -160,7 +163,7 @@ export function FindingsApproval({ taskId, question }: { taskId: string; questio
       ) : (
         <p className="text-xs text-zinc-500">Answered: {question.answer}</p>
       )}
-    </Card>
+    </div>
   );
 }
 
