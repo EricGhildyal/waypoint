@@ -33,7 +33,8 @@ interface NewTaskValues {
   difficulty: (typeof DIFFICULTIES)[number];
   models: Record<(typeof STAGES)[number], string>;
   skipTesting: boolean;
-  schedule: "now" | "later" | "after";
+  /** "draft" parks the task until the user presses Start; it gates on neither time nor a dependency. */
+  schedule: "now" | "later" | "after" | "draft";
   scheduledAt: string;
   dependsOnTaskId: string;
   tokenBudget: string;
@@ -53,7 +54,7 @@ const NewTaskSchema = Yup.object({
     testing: Yup.string().required("Required"),
   }),
   skipTesting: Yup.boolean(),
-  schedule: Yup.string().oneOf(["now", "later", "after"]).required(),
+  schedule: Yup.string().oneOf(["now", "later", "after", "draft"]).required(),
   scheduledAt: Yup.string().when("schedule", {
     is: "later",
     then: (schema) => schema.required("Pick a date & time"),
@@ -124,6 +125,7 @@ export function NewTaskForm({
                 : null,
             dependsOnTaskId:
               values.schedule === "after" && values.dependsOnTaskId ? values.dependsOnTaskId : null,
+            draft: values.schedule === "draft",
             tokenBudget: values.tokenBudget ? Number(values.tokenBudget) : null,
           }),
         });
@@ -230,7 +232,13 @@ export function NewTaskForm({
                 <option value="now">Run now</option>
                 <option value="later">At a specific time</option>
                 <option value="after">After another task</option>
+                <option value="draft">Don&rsquo;t start yet — start manually</option>
               </Select>
+              {formik.values.schedule === "draft" ? (
+                <p className="text-sm text-zinc-500 dark:text-zinc-400">
+                  The task is created but won&rsquo;t run until you press Start on its page.
+                </p>
+              ) : null}
               {formik.values.schedule === "later" ? (
                 <>
                   <Input type="datetime-local" {...formik.getFieldProps("scheduledAt")} />
