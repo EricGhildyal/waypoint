@@ -262,11 +262,11 @@ function GateNote({ task }: { task: TaskDetail }) {
     <div className="space-y-1 text-sm text-zinc-500">
       {task.dependsOn ? (
         <p>
-          {blocked ? "Blocked by" : "Depends on"} &ldquo;
+          {`${blocked ? "Blocked by" : "Depends on"} “`}
           <Link href={`/tasks/${task.dependsOn.id}`} className="text-indigo-400 hover:underline">
             {task.dependsOn.title}
           </Link>
-          &rdquo; ({STATUS_LABELS[task.dependsOn.status] ?? task.dependsOn.status})
+          {`” (${STATUS_LABELS[task.dependsOn.status] ?? task.dependsOn.status})`}
         </p>
       ) : null}
       {task.scheduledAt ? (
