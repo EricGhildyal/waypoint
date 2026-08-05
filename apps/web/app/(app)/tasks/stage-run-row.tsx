@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment, type ReactNode } from "react";
+import type { ReactNode } from "react";
 import {
   Card,
   CheckIcon,
@@ -168,23 +168,20 @@ export function SectionRow({
           {showPlan ? <PlanSection task={task} focus={focus} /> : null}
           {section.findings.map((f) => {
             const approval = f.kind === "review" ? merged : null;
-            const card = (
-              <FindingsCard
-                taskId={task.id}
-                view={f}
-                cyclesUsed={f.kind === "review" ? task.reviewCycles : task.testingCycles}
-                approval={approval}
-              />
-            );
-            const key = `${f.kind}-${f.attempt}`;
-            // keeps the ?focus=question-{id} email deeplink landing on the
-            // approval UI now that it lives inside this card
-            return approval ? (
-              <FocusAnchor key={key} highlighted={focus === `question-${approval.id}`}>
-                {card}
+            return (
+              // keeps the ?focus=question-{id} email deeplink landing on the
+              // approval UI now that it lives inside this card
+              <FocusAnchor
+                key={`${f.kind}-${f.attempt}`}
+                highlighted={Boolean(approval) && focus === `question-${approval?.id}`}
+              >
+                <FindingsCard
+                  taskId={task.id}
+                  view={f}
+                  cyclesUsed={f.kind === "review" ? task.reviewCycles : task.testingCycles}
+                  approval={approval}
+                />
               </FocusAnchor>
-            ) : (
-              <Fragment key={key}>{card}</Fragment>
             );
           })}
           <p className="text-xs text-zinc-500">

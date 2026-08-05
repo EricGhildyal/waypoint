@@ -30,9 +30,9 @@ export function FindingsCard({
   /** The round's review gate, when it has one — this card becomes it. */
   approval?: QuestionView | null;
 }) {
-  const gated = approval?.items?.length ? approval : null;
+  const gate = approval?.items?.length ? approval : null;
   return (
-    <Card className={clsx("space-y-2", gated?.status === "OPEN" && "border-amber-900/50")}>
+    <Card className={clsx("space-y-2", gate?.status === "OPEN" && "border-amber-900/50")}>
       <div className="flex items-center gap-2">
         <Subheading>
           {view.kind === "review" ? "Review" : "Testing"} cycle {view.attempt}
@@ -41,8 +41,8 @@ export function FindingsCard({
           {view.findings.verdict === "approve" ? "Approved" : "Changes requested"}
         </Badge>
       </div>
-      {gated ? (
-        <FindingsApproval taskId={taskId} question={gated} />
+      {gate ? (
+        <FindingsApproval taskId={taskId} question={gate} />
       ) : view.findings.findings.length === 0 ? (
         <p className="text-sm text-zinc-500">No findings.</p>
       ) : (
