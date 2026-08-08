@@ -30,9 +30,10 @@ export const EVENT_PAYLOAD_SCHEMAS = {
   LOG: z.object({
     level: z.enum(["debug", "info", "warn", "error"]),
     line: z.string().max(500),
-    // set on the model's own output so the UI can surface it in the highlights
-    // feed: "assistant" = response text, "thinking" = extended thinking
-    source: z.enum(["assistant", "thinking"]).optional(),
+    // set on lines the highlights feed should surface: "assistant" = the
+    // model's response text, "thinking" = its extended thinking, "system" = a
+    // note about the task itself (e.g. the user changing its dependency)
+    source: z.enum(["assistant", "thinking", "system"]).optional(),
   }),
   ERROR: z.object({
     code: z.string(),

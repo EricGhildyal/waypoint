@@ -93,8 +93,11 @@ export async function PATCH(req: NextRequest, ctx: Params) {
         if (!target) throw new ApiError(404, "dependency task not found");
         await assertNoCycle(id, target.id);
         await db.task.update({ where: { id }, data: { dependsOnTaskId: target.id } });
+        // source: "system" is what puts the line in the highlights feed —
+        // untagged info logs are filtered out as tool-call spam
         await emitEvent(id, "LOG", {
           level: "info",
+          source: "system",
           line: `dependency changed to task "${target.title}"`,
         });
         break;

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import useSWR from "swr";
 import {
   Button,
@@ -59,13 +59,26 @@ export function StopTaskDialog({
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
-  const choiceFor = (child: Dependent): Choice => choices[child.id] ?? "start";
+  // the dialog stays mounted, so a close leaves last time's picks and errors
+  // behind — start every visit blank
+  useEffect(() => {
+    if (!open) return;
+    setChoices({});
+    setDeps({});
+    setErrors({});
+    setError(null);
+  }, [open]);
 
   async function submit() {
-    // "Run after…" is only resolvable once a task is picked
+    // Nothing is assumed for a child: there is no default choice (a default of
+    // "start" would force-start work whose dependency never finished — the very
+    // thing this dialog exists to prevent), and "Run after…" needs its task.
     const missing: Record<string, string> = {};
     for (const child of blockedDependents) {
-      if (choiceFor(child) === "after" && !deps[child.id]) {
+      const choice = choices[child.id];
+      if (!choice) {
+        missing[child.id] = "Choose what happens to this task.";
+      } else if (choice === "after" && !deps[child.id]) {
         missing[child.id] = "Pick the task to run after.";
       }
     }
@@ -101,7 +114,7 @@ export function StopTaskDialog({
     // reported next to its child and the others still run.
     const failures: Record<string, string> = {};
     for (const child of blockedDependents) {
-      const choice = choiceFor(child);
+      const choice = choices[child.id];
       const body =
         choice === "after"
           ? { action: "redepend", dependsOnTaskId: deps[child.id] }
@@ -140,11 +153,11 @@ export function StopTaskDialog({
                   full
                   small
                   aria-label={`What to do with ${child.title}`}
-                  value={choiceFor(child)}
+                  value={choices[child.id]}
                   options={CHOICE_OPTIONS}
                   onChange={(value) => setChoices((prev) => ({ ...prev, [child.id]: value }))}
                 />
-                {choiceFor(child) === "after" ? (
+                {choices[child.id] === "after" ? (
                   <Select
                     value={deps[child.id] ?? ""}
                     onChange={(e) => setDeps((prev) => ({ ...prev, [child.id]: e.target.value }))}
