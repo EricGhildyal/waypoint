@@ -457,7 +457,7 @@ export async function runTesting(
     }
 
     const findings: Findings = { verdict: "approve", findings: [] };
-    await syncAndPush(config, sync, state);
+    await syncAndPush(config, sync, state, attempt);
     const prMd =
       (await readWorkspaceFile(config, ".waypoint/pr.md")) ?? "Automated change by Waypoint.";
     await sync.stageEnd({
@@ -549,7 +549,12 @@ export async function runTesting(
 
     // testing success: the RUNNER pushes (it has the repo + PAT, §7); the
     // orchestrator opens the PR once the stage end lands (→ OPENING_PR).
-    await syncAndPush(config, sync, state);
+    // The browser agent is done, so stop the app before the sync: its
+    // post-merge test run is the one place the test command would otherwise
+    // race the dev server for a port or a database. The `finally` kill stays as
+    // the safety net for every other exit path.
+    app.kill();
+    await syncAndPush(config, sync, state, attempt);
     const prMd =
       (await readWorkspaceFile(config, ".waypoint/pr.md")) ?? "Automated change by Waypoint.";
     await sync.stageEnd({
@@ -574,10 +579,28 @@ export async function runTesting(
  * targets while an agent is still around to deal with the fallout, so the PR
  * opens mergeable instead of landing conflicts in the user's lap.
  */
-async function syncAndPush(config: RunnerConfig, sync: Syncer, state: StateStore): Promise<void> {
+async function syncAndPush(
+  config: RunnerConfig,
+  sync: Syncer,
+  state: StateStore,
+  attempt: number,
+): Promise<void> {
   state.update({ phase: "PUSH" });
   const outcome = await syncWithDefaultBranch(config, sync);
-  if (outcome === "conflicts") {
+
+  if (outcome === "merged") {
+    // A conflict-free merge can still break the build — upstream renames what
+    // this branch calls, and git merges both sides without a murmur. Nobody
+    // reviews a fix made at this point, so this only reports: the PR opens
+    // mergeable either way, with the breakage visible instead of a surprise.
+    const gate = await runTestGate(config);
+    if (!gate.ok) {
+      sync.log(
+        "warn",
+        `the merge with ${config.meta.project.defaultBranch} was clean but the test gate now fails — pushing anyway, check the PR:\n${gate.feedback}`,
+      );
+    }
+  } else if (outcome === "conflicts") {
     // Deliberate simplification: the conflict agent runs as part of the TESTING
     // stage run, so it shares that run's identity — its session id overwrites
     // sessions.TESTING, its messages are appended to the same
@@ -587,7 +610,7 @@ async function syncAndPush(config: RunnerConfig, sync: Syncer, state: StateStore
     // harmless: a crash in phase PUSH re-runs the whole testing stage as a fresh
     // attempt anyway, and the leftover-merge abort is what makes that re-entry
     // safe.
-    await resolveMergeConflicts(config, sync, state);
+    await resolveMergeConflicts(config, sync, state, attempt);
   }
   await pushBranch(config, sync);
 }
@@ -605,6 +628,7 @@ async function resolveMergeConflicts(
   config: RunnerConfig,
   sync: Syncer,
   state: StateStore,
+  attempt: number,
 ): Promise<void> {
   const defaultBranch = config.meta.project.defaultBranch;
   const conflicts = await conflictedFiles(config);
@@ -613,18 +637,30 @@ async function resolveMergeConflicts(
   let gateRounds = 0;
   await runStageAgent(config, sync, state, {
     stage: "TESTING",
-    attempt: state.currentAttempt("TESTING"),
+    attempt,
     model: config.meta.models.implementation,
     initialPrompt: renderPrompt("merge", config, {
       CONFLICT_FILES: conflicts.map((file) => `- \`${file}\``).join("\n"),
     }),
     onTurnComplete: async () => {
-      if ((await mergeInProgress(config)) || (await conflictedFiles(config)).length > 0) {
+      // `git add` on a file that still has conflict markers in it satisfies both
+      // of git's own "is the merge done" checks, so check the content too —
+      // otherwise a project without a test command has nothing left to catch it.
+      const unfinished =
+        (await mergeInProgress(config)) || (await conflictedFiles(config)).length > 0;
+      const marked = unfinished ? [] : await filesWithConflictMarkers(config, conflicts);
+      if (unfinished || marked.length) {
         if (nudges < 2) {
           nudges++;
-          return "The merge is still in progress. Finish it now: resolve every conflicted file (`git diff --name-only --diff-filter=U` lists what is left), `git add` each one, then `git commit --no-edit`. Do not abort the merge.";
+          return unfinished
+            ? "The merge is still in progress. Finish it now: resolve every conflicted file (`git diff --name-only --diff-filter=U` lists what is left), `git add` each one, then `git commit --no-edit`. Do not abort the merge."
+            : `The merge is committed, but conflict markers are still in the file(s) below — that content is about to be pushed. Rewrite each one into the resolution you intended (no \`<<<<<<<\`, \`=======\` or \`>>>>>>>\` lines left), then commit.\n\n${marked.map((file) => `- ${file}`).join("\n")}`;
         }
-        throw new AgentError(`merge with origin/${defaultBranch} was left unresolved`);
+        throw new AgentError(
+          unfinished
+            ? `merge with origin/${defaultBranch} was left unresolved`
+            : `conflict markers left in ${marked.join(", ")} after merging origin/${defaultBranch}`,
+        );
       }
 
       // Gate first, cap second: the cap decides whether to send another round of
@@ -646,6 +682,21 @@ async function resolveMergeConflicts(
   });
 
   await commitLeftovers(config, `chore: resolve merge with ${defaultBranch}`);
+}
+
+/**
+ * Which of `files` still contain conflict markers. Only the files the merge
+ * itself flagged are scanned — a repo-wide search would flag anything that
+ * legitimately talks about markers, this prompt file included.
+ */
+async function filesWithConflictMarkers(config: RunnerConfig, files: string[]): Promise<string[]> {
+  const marked: string[] = [];
+  for (const file of files) {
+    const content = await readWorkspaceFile(config, file);
+    // both ends, so a file that merely documents one marker doesn't trip it
+    if (content && /^<<<<<<< /m.test(content) && /^>>>>>>> /m.test(content)) marked.push(file);
+  }
+  return marked;
 }
 
 async function bounceFromTesting(

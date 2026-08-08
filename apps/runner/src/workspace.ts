@@ -130,10 +130,19 @@ export async function ensureBranch(config: RunnerConfig, sync: Syncer): Promise<
   if (fetched.code !== 0) {
     sync.log("warn", `could not fetch origin/${defaultBranch} — branching from the local checkout`);
   }
-  const startPoint = fetched.code === 0 ? ` 'origin/${defaultBranch}'` : "";
-
   sync.log("info", `creating branch ${branch}`);
-  const res = await run(`git checkout -B '${branch}'${startPoint}`, { cwd: ws });
+  if (fetched.code === 0) {
+    const fresh = await run(`git checkout -B '${branch}' 'origin/${defaultBranch}'`, { cwd: ws });
+    if (fresh.code === 0) return;
+    // e.g. the setup command left a tracked file modified that also moved
+    // upstream — never worse than before: fall back to today's local branch
+    sync.log(
+      "warn",
+      `could not base ${branch} on origin/${defaultBranch} — branching from the local checkout:\n${tail(fresh.output, 500)}`,
+    );
+  }
+
+  const res = await run(`git checkout -B '${branch}'`, { cwd: ws });
   if (res.code !== 0) {
     throw new InfraFailure("GIT_CLONE", "failed to create task branch", tail(res.output));
   }
