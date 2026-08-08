@@ -78,6 +78,22 @@ export type SyncStage =
       artifacts?: Array<{ name: string; content: string }>;
     };
 
+/** Claude plan limit windows — mirrors `SDKRateLimitInfo.rateLimitType`. */
+export type UsageWindowType =
+  | "five_hour"
+  | "seven_day"
+  | "seven_day_opus"
+  | "seven_day_sonnet"
+  | "seven_day_overage_included"
+  | "overage";
+
+export interface UsageWindow {
+  type: UsageWindowType;
+  utilization: number;
+  resetsAt?: string;
+  status?: "allowed" | "allowed_warning" | "rejected";
+}
+
 export interface SyncRequest {
   cursor: string | null;
   events?: SyncEvent[];
@@ -88,6 +104,8 @@ export interface SyncRequest {
   rateLimit?: { resetsAt: string };
   /** SDK `allowed_warning` rate-limit event — display only, never pauses (§5). */
   rateLimitWarning?: { utilization?: number; resetsAt?: string };
+  /** Latest reading per Claude limit window — display only (settings page bars). */
+  usageWindows?: UsageWindow[];
 }
 
 export type InboxItem =
