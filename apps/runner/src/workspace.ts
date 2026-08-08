@@ -101,13 +101,117 @@ export async function prepareWorkspace(config: RunnerConfig, sync: Syncer): Prom
 
 /** Create/switch to the task branch (implementation stage, §7). */
 export async function ensureBranch(config: RunnerConfig, sync: Syncer): Promise<void> {
-  const current = await run("git rev-parse --abbrev-ref HEAD", { cwd: config.workspace });
-  if (current.output.trim() === config.meta.branchName) return;
-  sync.log("info", `creating branch ${config.meta.branchName}`);
-  const res = await run(`git checkout -B '${config.meta.branchName}'`, { cwd: config.workspace });
+  const ws = config.workspace;
+  const branch = config.meta.branchName;
+  const defaultBranch = config.meta.project.defaultBranch;
+
+  const current = await run("git rev-parse --abbrev-ref HEAD", { cwd: ws });
+  if (current.output.trim() === branch) return;
+
+  // A brand-new task branch is based on a freshly fetched origin/<default>:
+  // planning plus the plan-approval wait can leave the clone hours stale, and
+  // every commit of that staleness turns into a conflict later. An existing
+  // branch is never re-pointed — that would throw away the task's own work.
+  const known = await run(`git rev-parse --verify --quiet 'refs/heads/${branch}'`, { cwd: ws });
+  let startPoint = "";
+  if (known.code !== 0) {
+    const fetched = await run(`git fetch origin '${defaultBranch}'`, {
+      cwd: ws,
+      timeoutMs: 5 * 60 * 1000,
+    });
+    if (fetched.code === 0) {
+      startPoint = ` 'origin/${defaultBranch}'`;
+    } else {
+      sync.log(
+        "warn",
+        `could not fetch origin/${defaultBranch} — branching from the existing checkout`,
+      );
+    }
+  }
+
+  sync.log("info", `creating branch ${branch}`);
+  const res = await run(`git checkout -B '${branch}'${startPoint}`, { cwd: ws });
   if (res.code !== 0) {
     throw new InfraFailure("GIT_CLONE", "failed to create task branch", tail(res.output));
   }
+}
+
+export type SyncOutcome = "up-to-date" | "merged" | "conflicts" | "skipped";
+
+/**
+ * Bring the task branch up to date with the branch the PR will target, right
+ * before the push (§7) — main has usually moved on since the branch was cut, and
+ * a PR that opens with conflicts is the user's problem to untangle by hand.
+ *
+ * Merge, not rebase: one conflict pass instead of one per commit, no rewritten
+ * history, no force-push, and re-running it after a crash is harmless.
+ *
+ * Returns "conflicts" with the merge deliberately left in progress for the
+ * conflict-resolution agent to finish. Everything that can go wrong degrades to
+ * "skipped", i.e. exactly today's behavior: push unsynced and let GitHub say so.
+ */
+export async function syncWithDefaultBranch(
+  config: RunnerConfig,
+  sync: Syncer,
+): Promise<SyncOutcome> {
+  const ws = config.workspace;
+  const defaultBranch = config.meta.project.defaultBranch;
+
+  // A container that died mid-merge resumes into this same code path; clear the
+  // half-finished merge so the attempt below starts from a clean tree.
+  await run("git merge --abort 2>/dev/null || true", { cwd: ws });
+
+  const fetched = await run(`git fetch origin '${defaultBranch}'`, {
+    cwd: ws,
+    timeoutMs: 5 * 60 * 1000,
+  });
+  if (fetched.code !== 0) {
+    sync.log(
+      "warn",
+      `could not fetch origin/${defaultBranch} — pushing without syncing:\n${tail(fetched.output, 500)}`,
+    );
+    return "skipped";
+  }
+
+  const behind = await run(`git rev-list --count 'HEAD..origin/${defaultBranch}'`, { cwd: ws });
+  if (behind.code === 0 && behind.output.trim() === "0") {
+    sync.log("info", `already up to date with origin/${defaultBranch}`);
+    return "up-to-date";
+  }
+
+  sync.log("info", `merging origin/${defaultBranch} into ${config.meta.branchName}`);
+  const merge = await run(`git merge --no-edit 'origin/${defaultBranch}'`, {
+    cwd: ws,
+    timeoutMs: 5 * 60 * 1000,
+  });
+  if (merge.code === 0) return "merged";
+
+  const conflicts = await conflictedFiles(config);
+  if (conflicts.length === 0) {
+    // failed for some reason other than conflicts — put the tree back and push
+    await run("git merge --abort 2>/dev/null || true", { cwd: ws });
+    sync.log(
+      "warn",
+      `merging origin/${defaultBranch} failed without conflicts — pushing without syncing:\n${tail(merge.output, 500)}`,
+    );
+    return "skipped";
+  }
+  sync.log("warn", `merge conflicts in ${conflicts.length} file(s) — resolving with an agent`);
+  return "conflicts";
+}
+
+/** Files left unmerged by an in-progress merge. */
+export async function conflictedFiles(config: RunnerConfig): Promise<string[]> {
+  const res = await run("git diff --name-only --diff-filter=U", { cwd: config.workspace });
+  return res.output
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+}
+
+/** True while a merge is started but not yet committed or aborted. */
+export function mergeInProgress(config: RunnerConfig): Promise<boolean> {
+  return exists(path.join(config.workspace, ".git", "MERGE_HEAD"));
 }
 
 /** Commit anything the agent left uncommitted (safety net before review/push). */
