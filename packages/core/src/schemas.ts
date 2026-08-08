@@ -27,6 +27,9 @@ export const EVENT_PAYLOAD_SCHEMAS = {
   QUESTION: z.object({ questionId: z.string() }),
   ANSWER: z.object({ questionId: z.string(), via: z.enum(["UI", "EMAIL"]) }),
   STEER: z.object({ text: z.string() }),
+  // No payload: the Prompt panel always shows the current text, so recording
+  // that a rewrite happened is enough — no need to duplicate the prompt here.
+  PROMPT_UPDATED: z.object({}),
   LOG: z.object({
     level: z.enum(["debug", "info", "warn", "error"]),
     line: z.string().max(500),

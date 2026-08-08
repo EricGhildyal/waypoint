@@ -19,8 +19,11 @@ export async function GET(_req: NextRequest, ctx: Params) {
 /** Statuses the "Start now" action accepts: a draft, or a task still behind a gate. */
 const STARTABLE_STATUSES = new Set<TaskStatus>(["DRAFT", "SCHEDULED", "BLOCKED"]);
 
+/** Statuses whose prompt can still be rewritten — nothing has run yet. */
+const PROMPT_EDITABLE_STATUSES = new Set<TaskStatus>(["DRAFT", "SCHEDULED", "BLOCKED"]);
+
 const PatchSchema = z.object({
-  action: z.enum(["start", "pause", "resume", "stop", "cancel", "steer", "retry"]),
+  action: z.enum(["start", "pause", "resume", "stop", "cancel", "steer", "retry", "update_prompt"]),
   prompt: z.string().optional(),
 });
 
@@ -66,6 +69,21 @@ export async function PATCH(req: NextRequest, ctx: Params) {
         if (!prompt?.trim()) throw new ApiError(400, "steer requires a prompt");
         await db.steeringMessage.create({ data: { taskId: id, text: prompt.trim() } });
         await emitEvent(id, "STEER", { text: prompt.trim() });
+        break;
+      }
+      case "update_prompt": {
+        // Rewriting the row is the whole job: a pre-start task has no container
+        // and no session, and the orchestrator reads Task.prompt when it builds
+        // TASK_META. The status doesn't change, so this never calls transition().
+        const next = prompt?.trim();
+        if (!next) throw new ApiError(400, "update_prompt requires a prompt");
+        if (!PROMPT_EDITABLE_STATUSES.has(task.status)) {
+          throw new ApiError(409, `cannot edit the prompt of a task that is ${task.status}`);
+        }
+        if (next !== task.prompt) {
+          await db.task.update({ where: { id }, data: { prompt: next } });
+          await emitEvent(id, "PROMPT_UPDATED", {});
+        }
         break;
       }
       case "retry": {
