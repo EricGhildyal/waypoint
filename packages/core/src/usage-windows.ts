@@ -76,9 +76,12 @@ export async function recordUsageWindows(observations: UsageWindow[]): Promise<v
   for (const obs of observations) {
     const resets = obs.resetsAt ? Date.parse(obs.resetsAt) : Number.NaN;
     if (Number.isFinite(resets) && resets <= Date.now()) continue;
+    // an observation that omits resetsAt keeps the one we already knew, as long
+    // as that window has not itself rolled over
+    const resetsAt = obs.resetsAt ?? existing[obs.type]?.resetsAt;
     existing[obs.type] = {
       utilization: obs.utilization,
-      ...(obs.resetsAt ? { resetsAt: obs.resetsAt } : {}),
+      ...(resetsAt ? { resetsAt } : {}),
       ...(obs.status ? { status: obs.status } : {}),
       observedAt,
     };
