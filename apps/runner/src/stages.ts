@@ -1,6 +1,6 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import { runStageAgent } from "./agent";
+import { AgentError, runStageAgent } from "./agent";
 import type { RunnerConfig } from "./config";
 import { runFormatAndLint, runTestGate } from "./coverage";
 import { spawnDetached, tail } from "./proc";
@@ -20,9 +20,18 @@ import {
   TESTING_CYCLE_CAP,
   parseFindingSelection,
 } from "./types";
-import { commitLeftovers, ensureBranch, pushBranch, readWorkspaceFile } from "./workspace";
+import {
+  commitLeftovers,
+  conflictedFiles,
+  ensureBranch,
+  mergeInProgress,
+  pushBranch,
+  readWorkspaceFile,
+  syncWithDefaultBranch,
+} from "./workspace";
 
 const IMPL_GATE_CAP = 10;
+const MERGE_GATE_CAP = 3;
 
 // ---------------------------------------------------------------------------
 // Planning (§7) — fresh session; output contract: /workspace/.waypoint/plan.md
@@ -448,8 +457,7 @@ export async function runTesting(
     }
 
     const findings: Findings = { verdict: "approve", findings: [] };
-    state.update({ phase: "PUSH" });
-    await pushBranch(config, sync);
+    await syncAndPush(config, sync, state);
     const prMd =
       (await readWorkspaceFile(config, ".waypoint/pr.md")) ?? "Automated change by Waypoint.";
     await sync.stageEnd({
@@ -541,8 +549,7 @@ export async function runTesting(
 
     // testing success: the RUNNER pushes (it has the repo + PAT, §7); the
     // orchestrator opens the PR once the stage end lands (→ OPENING_PR).
-    state.update({ phase: "PUSH" });
-    await pushBranch(config, sync);
+    await syncAndPush(config, sync, state);
     const prMd =
       (await readWorkspaceFile(config, ".waypoint/pr.md")) ?? "Automated change by Waypoint.";
     await sync.stageEnd({
@@ -560,6 +567,79 @@ export async function runTesting(
   } finally {
     app.kill();
   }
+}
+
+/**
+ * The pre-push sync (§7): bring the branch up to date with the branch the PR
+ * targets while an agent is still around to deal with the fallout, so the PR
+ * opens mergeable instead of landing conflicts in the user's lap.
+ */
+async function syncAndPush(config: RunnerConfig, sync: Syncer, state: StateStore): Promise<void> {
+  state.update({ phase: "PUSH" });
+  const outcome = await syncWithDefaultBranch(config, sync);
+  if (outcome === "conflicts") {
+    // Deliberate simplifications: the conflict agent runs as part of the
+    // TESTING stage run, so its session id overwrites sessions.TESTING —
+    // harmless, because a crash in phase PUSH re-runs the whole testing stage
+    // as a fresh attempt anyway. What makes that re-entry safe is the
+    // leftover-merge abort at the top of syncWithDefaultBranch.
+    await resolveMergeConflicts(config, sync, state);
+  }
+  await pushBranch(config, sync);
+}
+
+/**
+ * Hand the conflicts left by syncWithDefaultBranch to an agent, then re-check
+ * the test gate — a clean merge of two correct branches can still be broken.
+ *
+ * Failure posture: an agent that never concludes the merge fails the task
+ * (retryable), because pushing conflict markers is never acceptable. A gate
+ * that stays red after {@link MERGE_GATE_CAP} rounds only warns — a mergeable
+ * PR with a visible red gate beats a stuck pipeline.
+ */
+async function resolveMergeConflicts(
+  config: RunnerConfig,
+  sync: Syncer,
+  state: StateStore,
+): Promise<void> {
+  const defaultBranch = config.meta.project.defaultBranch;
+  const conflicts = await conflictedFiles(config);
+
+  let nudges = 0;
+  let gateRounds = 0;
+  await runStageAgent(config, sync, state, {
+    stage: "TESTING",
+    attempt: state.currentAttempt("TESTING"),
+    model: config.meta.models.implementation,
+    initialPrompt: renderPrompt("merge", config, {
+      CONFLICT_FILES: conflicts.map((file) => `- \`${file}\``).join("\n"),
+    }),
+    onTurnComplete: async () => {
+      if ((await mergeInProgress(config)) || (await conflictedFiles(config)).length > 0) {
+        if (nudges < 2) {
+          nudges++;
+          return "The merge is still in progress. Finish it now: resolve every conflicted file (`git diff --name-only --diff-filter=U` lists what is left), `git add` each one, then `git commit --no-edit`. Do not abort the merge.";
+        }
+        throw new AgentError(`merge with origin/${defaultBranch} was left unresolved`);
+      }
+
+      if (gateRounds >= MERGE_GATE_CAP) {
+        sync.log(
+          "warn",
+          `the test gate is still failing ${MERGE_GATE_CAP} rounds after the merge — proceeding with the push, check the PR`,
+        );
+        return null;
+      }
+      gateRounds++;
+      const gate = await runTestGate(config);
+      if (!gate.ok) {
+        return `The merge is committed, but the test gate now fails. Fix the fallout from the merge — do not undo the upstream changes you just merged in.\n\n${gate.feedback}`;
+      }
+      return null;
+    },
+  });
+
+  await commitLeftovers(config, `chore: resolve merge with ${defaultBranch}`);
 }
 
 async function bounceFromTesting(
