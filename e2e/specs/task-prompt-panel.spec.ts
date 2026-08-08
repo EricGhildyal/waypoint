@@ -9,7 +9,10 @@ import { reseed } from "../fixtures/reseed";
  * The contract this suite pins down:
  *   - present on every task in every status, collapsed on first paint
  *   - expands to the full prompt as PLAIN text (not markdown), line breaks kept
- *   - genuinely read-only: no input, textarea or contenteditable inside it
+ *   - genuinely read-only on every status covered here: no input, textarea or
+ *     contenteditable inside it. (A task that hasn't started yet — DRAFT,
+ *     SCHEDULED or BLOCKED — additionally gets an Edit button that swaps in a
+ *     textarea; there is no fixture in those statuses, so it isn't covered.)
  *   - stays expanded across the page's 2.5s SWR polling, and while the
  *     stage-run rows below it are expanded and collapsed
  *   - long prompts scroll inside the panel instead of pushing the list down
