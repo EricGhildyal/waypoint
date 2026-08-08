@@ -98,6 +98,7 @@ enum EventType {
   QUESTION
   ANSWER
   STEER
+  PROMPT_UPDATED // user rewrote Task.prompt before the task started
   LOG
   ERROR
   STAGE_START
