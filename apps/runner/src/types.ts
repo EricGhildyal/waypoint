@@ -78,20 +78,16 @@ export type SyncStage =
       artifacts?: Array<{ name: string; content: string }>;
     };
 
-/** Claude plan limit windows — mirrors `SDKRateLimitInfo.rateLimitType`. */
-export type UsageWindowType =
-  | "five_hour"
-  | "seven_day"
-  | "seven_day_opus"
-  | "seven_day_sonnet"
-  | "seven_day_overage_included"
-  | "overage";
-
+/**
+ * One Claude plan limit window reading, from `SDKRateLimitInfo`. `type` is the
+ * SDK's `rateLimitType` passed through verbatim as an open string — the host
+ * decides which names it knows how to display, so a window name the SDK adds
+ * later rides through instead of failing this runner's syncs.
+ */
 export interface UsageWindow {
-  type: UsageWindowType;
+  type: string;
   utilization: number;
   resetsAt?: string;
-  status?: "allowed" | "allowed_warning" | "rejected";
 }
 
 export interface SyncRequest {

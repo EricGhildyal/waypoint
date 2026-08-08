@@ -10,7 +10,6 @@ import type {
   SyncStage,
   SyncUsage,
   UsageWindow,
-  UsageWindowType,
 } from "./types";
 
 export class StopRequested extends Error {
@@ -33,7 +32,7 @@ export class Syncer {
   private stageMsgs: SyncStage[] = [];
   private rateLimit: { resetsAt: string } | null = null;
   private rateLimitWarning: { utilization?: number; resetsAt?: string } | null = null;
-  private usageWindows = new Map<UsageWindowType, UsageWindow>();
+  private usageWindows = new Map<string, UsageWindow>();
 
   private steeringQueue: Array<{ id: string; text: string }> = [];
   private answerQueue: Array<{ id: string; questionId: string; answer: string }> = [];

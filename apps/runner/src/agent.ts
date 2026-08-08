@@ -371,7 +371,6 @@ async function executeQuery(
             type: info.rateLimitType,
             utilization: info.utilization,
             resetsAt: resetsAtFrom(info) ?? undefined,
-            status: info.status,
           });
         }
         continue;

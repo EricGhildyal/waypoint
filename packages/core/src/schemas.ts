@@ -126,11 +126,23 @@ export const USAGE_WINDOW_TYPES = [
 ] as const;
 export type UsageWindowType = (typeof USAGE_WINDOW_TYPES)[number];
 
+export function isUsageWindowType(value: string): value is UsageWindowType {
+  return (USAGE_WINDOW_TYPES as readonly string[]).includes(value);
+}
+
+/**
+ * `type` is deliberately an open string rather than an enum. Anthropic can name
+ * a window we don't list (the SDK's own list already lags — it still says
+ * "opus" for what is now Fable), and a closed enum here would 400 the WHOLE
+ * sync payload: the runner re-queues on failure, so one unknown window name
+ * would wedge that runner's syncs forever and the task would die of a lost
+ * heartbeat. Unknown names are dropped downstream in recordUsageWindows
+ * instead — a missing cosmetic bar must never cost a running task.
+ */
 export const UsageWindowSchema = z.object({
-  type: z.enum(USAGE_WINDOW_TYPES),
+  type: z.string(),
   utilization: z.number(),
   resetsAt: z.string().optional(),
-  status: z.enum(["allowed", "allowed_warning", "rejected"]).optional(),
 });
 export type UsageWindow = z.infer<typeof UsageWindowSchema>;
 
