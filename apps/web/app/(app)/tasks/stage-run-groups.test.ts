@@ -69,6 +69,7 @@ function makeTask(over: Partial<TaskDetail>): TaskDetail {
     project: { id: "p1", name: "proj", repoUrl: "", defaultBranch: "main" },
     scheduledAt: null,
     dependsOn: null,
+    dependents: [],
     tokenBudget: null,
     tokenTotal: 0,
     branchName: null,

@@ -69,6 +69,8 @@ export interface TaskDetail {
   scheduledAt: string | null;
   /** The task this one waits on (BLOCKED), kept as history once the gate clears. */
   dependsOn: { id: string; title: string; status: string } | null;
+  /** Tasks waiting on this one; the stop dialog resolves the BLOCKED ones. */
+  dependents: Array<{ id: string; title: string; status: string }>;
   tokenBudget: number | null;
   tokenTotal: number;
   branchName: string | null;
@@ -91,6 +93,7 @@ export async function getTaskDetail(taskId: string): Promise<TaskDetail> {
     include: {
       project: true,
       dependsOn: { select: { id: true, title: true, status: true } },
+      dependents: { select: { id: true, title: true, status: true } },
       stageRuns: { orderBy: { startedAt: "asc" } },
       questions: { orderBy: { createdAt: "desc" } },
     },
@@ -136,6 +139,7 @@ export async function getTaskDetail(taskId: string): Promise<TaskDetail> {
     dependsOn: task.dependsOn
       ? { id: task.dependsOn.id, title: task.dependsOn.title, status: task.dependsOn.status }
       : null,
+    dependents: task.dependents.map((d) => ({ id: d.id, title: d.title, status: d.status })),
     tokenBudget: task.tokenBudget,
     tokenTotal,
     branchName: task.branchName,
