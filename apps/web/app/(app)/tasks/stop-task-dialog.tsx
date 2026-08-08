@@ -58,8 +58,6 @@ export function StopTaskDialog({
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  /** Children already resolved by an earlier submit — never replayed. */
-  const [resolved, setResolved] = useState<string[]>([]);
 
   const choiceFor = (child: Dependent): Choice => choices[child.id] ?? "start";
 
@@ -80,26 +78,29 @@ export function StopTaskDialog({
     setError(null);
     setBusy(true);
 
-    // Every request is independent: one failure (a child force-started or
-    // promoted while the dialog was open answers 409) must not strand the rest,
-    // so each is reported next to its child and the others still run. A retry
-    // skips whatever already succeeded rather than replaying it into a 409.
-    const failures: Record<string, string> = {};
-    let parentError: string | null = null;
     try {
       // Stop the parent first: a tick that lands mid-dialog then can't start a
-      // child off the back of it (and can't start one off a cancelled dep at all).
+      // child off the back of it (and can't start one off a cancelled dep at
+      // all). If it fails — the task finished in the moment before the click,
+      // so the stop is a 409 — nothing is done to the children: their
+      // dependency may well have succeeded, and resolving them here would
+      // quietly redirect work that was about to run on its own.
       await apiFetch(`/api/tasks/${taskId}`, {
         method: "PATCH",
         body: JSON.stringify({ action: "stop" }),
       });
     } catch (err) {
-      parentError = `Couldn’t stop this task: ${message(err)}`;
+      setError(`Couldn’t stop this task: ${message(err)}`);
+      setBusy(false);
+      await onDone();
+      return;
     }
 
-    const done: string[] = [];
+    // Each child is independent: one failure (a child force-started or promoted
+    // while the dialog was open answers 409) must not strand the rest, so it is
+    // reported next to its child and the others still run.
+    const failures: Record<string, string> = {};
     for (const child of blockedDependents) {
-      if (resolved.includes(child.id)) continue;
       const choice = choiceFor(child);
       const body =
         choice === "after"
@@ -107,17 +108,15 @@ export function StopTaskDialog({
           : { action: choice === "draft" ? "draft" : "start" };
       try {
         await apiFetch(`/api/tasks/${child.id}`, { method: "PATCH", body: JSON.stringify(body) });
-        done.push(child.id);
       } catch (err) {
         failures[child.id] = `Couldn’t update this task: ${message(err)}`;
       }
     }
 
-    setResolved((prev) => [...prev, ...done]);
     setBusy(false);
+    // the page's 2.5s poll drops resolved children from the list on its own
     await onDone();
-    if (parentError || Object.keys(failures).length) {
-      setError(parentError);
+    if (Object.keys(failures).length) {
       setErrors(failures);
       return;
     }
@@ -140,7 +139,6 @@ export function StopTaskDialog({
                 <ButtonGroup
                   full
                   small
-                  disabled={resolved.includes(child.id)}
                   aria-label={`What to do with ${child.title}`}
                   value={choiceFor(child)}
                   options={CHOICE_OPTIONS}
@@ -149,7 +147,6 @@ export function StopTaskDialog({
                 {choiceFor(child) === "after" ? (
                   <Select
                     value={deps[child.id] ?? ""}
-                    disabled={resolved.includes(child.id)}
                     onChange={(e) => setDeps((prev) => ({ ...prev, [child.id]: e.target.value }))}
                   >
                     <option value="">Select task…</option>
@@ -163,9 +160,6 @@ export function StopTaskDialog({
                         </option>
                       ))}
                   </Select>
-                ) : null}
-                {resolved.includes(child.id) ? (
-                  <p className="text-xs text-zinc-500">Applied.</p>
                 ) : null}
                 <ErrorText>{errors[child.id]}</ErrorText>
               </div>
