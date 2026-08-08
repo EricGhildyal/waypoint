@@ -100,13 +100,17 @@ export async function PATCH(req: NextRequest, ctx: Params) {
         break;
       }
       case "draft": {
-        // "Run manually" — back to a draft, both gates cleared so neither can
-        // resurface when the user presses Start (same invariant as creation).
+        // "Run manually" — back to a draft with the dependency gate cleared, so
+        // it can't re-block once the user presses Start. Leave DRAFT first: a
+        // tick landing between the two writes would otherwise see a BLOCKED row
+        // with no dependency and promote it ("dependency missing"). A draft
+        // keeping a stale scheduledAt is harmless — promoteScheduled filters on
+        // status, exactly as after "Start now".
         if (task.status !== "BLOCKED") {
           throw new ApiError(409, `cannot switch a task that is ${task.status} to a draft`);
         }
-        await db.task.update({ where: { id }, data: { dependsOnTaskId: null } });
         await transition(id, "DRAFT", { reason: "switched to manual start" });
+        await db.task.update({ where: { id }, data: { dependsOnTaskId: null } });
         break;
       }
       case "retry": {
