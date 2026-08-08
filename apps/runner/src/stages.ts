@@ -578,11 +578,15 @@ async function syncAndPush(config: RunnerConfig, sync: Syncer, state: StateStore
   state.update({ phase: "PUSH" });
   const outcome = await syncWithDefaultBranch(config, sync);
   if (outcome === "conflicts") {
-    // Deliberate simplifications: the conflict agent runs as part of the
-    // TESTING stage run, so its session id overwrites sessions.TESTING —
-    // harmless, because a crash in phase PUSH re-runs the whole testing stage
-    // as a fresh attempt anyway. What makes that re-entry safe is the
-    // leftover-merge abort at the top of syncWithDefaultBranch.
+    // Deliberate simplification: the conflict agent runs as part of the TESTING
+    // stage run, so it shares that run's identity — its session id overwrites
+    // sessions.TESTING, its messages are appended to the same
+    // testing-<attempt>.jsonl transcript the testing agent wrote (expect two
+    // sessions in one file), and in the skipTesting path, whose stageEnd sends
+    // no sessionId, the stage run ends up pointing at the merge session. All
+    // harmless: a crash in phase PUSH re-runs the whole testing stage as a fresh
+    // attempt anyway, and the leftover-merge abort is what makes that re-entry
+    // safe.
     await resolveMergeConflicts(config, sync, state);
   }
   await pushBranch(config, sync);
@@ -623,6 +627,13 @@ async function resolveMergeConflicts(
         throw new AgentError(`merge with origin/${defaultBranch} was left unresolved`);
       }
 
+      // Gate first, cap second: the cap decides whether to send another round of
+      // feedback, never whether to check — the agent's last fix gets verified
+      // like every other one.
+      const gate = await runTestGate(config);
+      if (gate.ok) return null;
+
+      gateRounds++;
       if (gateRounds >= MERGE_GATE_CAP) {
         sync.log(
           "warn",
@@ -630,12 +641,7 @@ async function resolveMergeConflicts(
         );
         return null;
       }
-      gateRounds++;
-      const gate = await runTestGate(config);
-      if (!gate.ok) {
-        return `The merge is committed, but the test gate now fails. Fix the fallout from the merge — do not undo the upstream changes you just merged in.\n\n${gate.feedback}`;
-      }
-      return null;
+      return `The merge is committed, but the test gate now fails. Fix the fallout from the merge — do not undo the upstream changes you just merged in.\n\n${gate.feedback}`;
     },
   });
 

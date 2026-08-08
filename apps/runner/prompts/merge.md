@@ -26,7 +26,7 @@ You are resolving merge conflicts in `/workspace`. A merge of `origin/{{DEFAULT_
 - **Touch nothing unrelated.** No refactors, no drive-by fixes, no new features — only the conflicted regions and whatever mechanical follow-up an upstream rename forces (e.g. updating a call site so the code still compiles).
 - If a conflict is genuinely ambiguous and getting it wrong would break behavior, use `ask_user` rather than guessing.
 
-After the merge commit lands, the harness re-runs the test gate. If it fails, you get the output back and fix the fallout in the same session.
+After the merge commit lands, the harness re-runs the test gate. If it fails, you get the output back and fix the fallout in the same session. If the merge brought in dependency or lockfile changes, re-running the project's setup command (`{{SETUP_COMMAND}}`) is allowed and expected before you trust those test results — the "touch nothing unrelated" rule is about source changes, not about keeping installed dependencies stale.
 
 ## Project instructions
 

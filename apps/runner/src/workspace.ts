@@ -160,9 +160,7 @@ export async function syncWithDefaultBranch(
   const ws = config.workspace;
   const defaultBranch = config.meta.project.defaultBranch;
 
-  // A container that died mid-merge resumes into this same code path; clear the
-  // half-finished merge so the attempt below starts from a clean tree.
-  await run("git merge --abort 2>/dev/null || true", { cwd: ws });
+  await abortLeftoverMerge(config);
 
   const fetched = await run(`git fetch origin '${defaultBranch}'`, {
     cwd: ws,
@@ -192,7 +190,7 @@ export async function syncWithDefaultBranch(
   const conflicts = await conflictedFiles(config);
   if (conflicts.length === 0) {
     // failed for some reason other than conflicts — put the tree back and push
-    await run("git merge --abort 2>/dev/null || true", { cwd: ws });
+    await abortLeftoverMerge(config);
     sync.log(
       "warn",
       `merging origin/${defaultBranch} failed without conflicts — pushing without syncing:\n${tail(merge.output, 500)}`,
@@ -201,6 +199,21 @@ export async function syncWithDefaultBranch(
   }
   sync.log("warn", `merge conflicts in ${conflicts.length} file(s) — resolving with an agent`);
   return "conflicts";
+}
+
+/**
+ * Throw away a merge left half-finished by a crashed (or given-up) conflict
+ * resolution. Returns whether there was one.
+ *
+ * This runs at runner boot as well as before each sync, because an in-progress
+ * merge is live ammunition: `git commit` during one concludes it, so the very
+ * next commitLeftovers() would bake the conflict markers into a commit and push
+ * them. Whoever touches git first after a restart has to clear it.
+ */
+export async function abortLeftoverMerge(config: RunnerConfig): Promise<boolean> {
+  if (!(await mergeInProgress(config))) return false;
+  await run("git merge --abort 2>/dev/null || true", { cwd: config.workspace });
+  return true;
 }
 
 /** Files left unmerged by an in-progress merge. */
@@ -219,6 +232,10 @@ export function mergeInProgress(config: RunnerConfig): Promise<boolean> {
 
 /** Commit anything the agent left uncommitted (safety net before review/push). */
 export async function commitLeftovers(config: RunnerConfig, message: string): Promise<void> {
+  // `git commit` during a conflicted merge concludes it — with the conflict
+  // markers as content. This safety net must never be the thing that does that;
+  // clearing the merge belongs to abortLeftoverMerge.
+  if (await mergeInProgress(config)) return;
   const status = await run("git status --porcelain", { cwd: config.workspace });
   if (!status.output.trim()) return;
   await run(`git add -A && git commit -q -m '${message.replaceAll("'", "'\\''")}'`, {
