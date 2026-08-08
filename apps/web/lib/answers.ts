@@ -1,7 +1,6 @@
 import {
   CYCLE_CAP_OPTION_CANCEL,
   CYCLE_CAP_OPTION_CONTINUE,
-  DEP_OPTION_CANCEL,
   STAGE_TO_STATUS,
   db,
   emitEvent,
@@ -37,9 +36,7 @@ export async function applyAnswer(
 
   const task = await db.task.findUniqueOrThrow({ where: { id: taskId } });
   const options = (question.options as string[] | null) ?? [];
-  const cancels =
-    (options.includes(CYCLE_CAP_OPTION_CANCEL) || options.includes(DEP_OPTION_CANCEL)) &&
-    /^cancel/i.test(answer);
+  const cancels = options.includes(CYCLE_CAP_OPTION_CANCEL) && /^cancel/i.test(answer);
 
   if (question.kind === "PLAN_APPROVAL") {
     if (task.status !== "AWAITING_PLAN_APPROVAL") return; // paused/cancelled meanwhile
@@ -94,7 +91,8 @@ export async function applyAnswer(
   if (task.currentStage) {
     await transition(taskId, STAGE_TO_STATUS[task.currentStage], { pauseReason: null });
   } else {
-    // dependency-failed proceed-anyway question (task never started)
+    // generic fallback: a question answered before the task ever entered a
+    // stage, so there is no stage to return to — queue it instead
     await transition(taskId, "QUEUED", { pauseReason: null });
   }
 }

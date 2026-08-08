@@ -1,9 +1,6 @@
 import {
   ACTIVE_STATUSES,
-  DEP_OPTION_CANCEL,
-  DEP_OPTION_PROCEED,
   IDLE_STATUSES,
-  ORCHESTRATOR_STAGE_RUN_ID,
   RUNNING_STAGE_STATUSES,
   STAGE_TO_STATUS,
   db,
@@ -58,7 +55,12 @@ async function promoteScheduled(): Promise<void> {
   }
 }
 
-/** 2. BLOCKED → QUEUED when the dependency is DONE; FAILED/CANCELLED dep → NEEDS_INPUT. */
+/**
+ * 2. BLOCKED → QUEUED when the dependency is DONE — and only then. A dependency
+ * that ended FAILED or CANCELLED (or is still running) leaves the task BLOCKED:
+ * it waits for a retry to reach DONE, or for the user to force it with
+ * "Start now" / resolve it from the parent's stop dialog.
+ */
 async function promoteBlocked(): Promise<void> {
   const blocked = await db.task.findMany({
     where: { status: "BLOCKED" },
@@ -72,19 +74,6 @@ async function promoteBlocked(): Promise<void> {
     }
     if (dep.status === "DONE") {
       await transition(task.id, "QUEUED", { reason: `dependency ${dep.id} done` });
-    } else if (dep.status === "FAILED" || dep.status === "CANCELLED") {
-      const q = await db.question.create({
-        data: {
-          taskId: task.id,
-          stageRunId: ORCHESTRATOR_STAGE_RUN_ID,
-          kind: "QUESTION",
-          text: `The task this one depends on ("${dep.title}") ended ${dep.status}. Proceed anyway, or cancel?`,
-          contextSummary: `Dependency "${dep.title}" ended ${dep.status}.`,
-          options: [DEP_OPTION_PROCEED, DEP_OPTION_CANCEL],
-        },
-      });
-      await emitEvent(task.id, "QUESTION", { questionId: q.id });
-      await transition(task.id, "NEEDS_INPUT", { reason: `dependency ${dep.status}` });
     }
   }
 }

@@ -4,9 +4,10 @@ import clsx from "clsx";
 import { STAGE_LABELS, STATUS_LABELS } from "@/lib/format";
 import type { FeedEvent } from "./stage-run-groups";
 
-// The feed shows pipeline-level highlights plus the model's own narration
-// (LOG lines tagged source: assistant/thinking); tool-call and command spam
-// (untagged LOG debug/info, TOKEN_UPDATE) stays in the stage transcripts.
+// The feed shows pipeline-level highlights plus the model's own narration and
+// task-level notes (LOG lines tagged source: assistant/thinking/system);
+// tool-call and command spam (untagged LOG debug/info, TOKEN_UPDATE) stays in
+// the stage transcripts.
 // CHECKLIST_UPDATE is omitted because the checklist is always visible beside
 // the feed.
 const HIGHLIGHT_TYPES = new Set([
@@ -27,7 +28,13 @@ export function isHighlight(event: FeedEvent): boolean {
   if (HIGHLIGHT_TYPES.has(event.type)) return true;
   if (event.type !== "LOG") return false;
   const { source, level } = event.payload;
-  return source === "assistant" || source === "thinking" || level === "warn" || level === "error";
+  return (
+    source === "assistant" ||
+    source === "thinking" ||
+    source === "system" ||
+    level === "warn" ||
+    level === "error"
+  );
 }
 
 const EVENT_STYLES: Record<string, string> = {
@@ -58,7 +65,7 @@ export function EventLine({ event }: { event: FeedEvent }) {
       text = `${STAGE_LABELS[String(p.stage)] ?? p.stage} #${p.attempt} ended: ${p.status}`;
       break;
     case "LOG":
-      // only assistant/thinking narration and warn/error lines pass the filter
+      // only assistant/thinking/system notes and warn/error lines pass the filter
       text = `${p.source === "thinking" ? "💭 " : ""}${String(p.line ?? "")}`;
       break;
     case "ERROR":
@@ -104,5 +111,7 @@ export function EventLine({ event }: { event: FeedEvent }) {
 function logStyle(p: Record<string, unknown>): string {
   if (p.source === "thinking") return "italic text-zinc-500";
   if (p.source === "assistant") return "text-zinc-200";
+  // a note about the task itself, not a warning — don't paint it yellow
+  if (p.source === "system") return "text-zinc-400";
   return p.level === "error" ? "text-red-400" : "text-yellow-300";
 }

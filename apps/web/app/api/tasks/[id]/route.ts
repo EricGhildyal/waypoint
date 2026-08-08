@@ -23,8 +23,21 @@ const STARTABLE_STATUSES = new Set<TaskStatus>(["DRAFT", "SCHEDULED", "BLOCKED"]
 const PROMPT_EDITABLE_STATUSES = new Set<TaskStatus>(["DRAFT", "SCHEDULED", "BLOCKED"]);
 
 const PatchSchema = z.object({
-  action: z.enum(["start", "pause", "resume", "stop", "cancel", "steer", "retry", "update_prompt"]),
+  action: z.enum([
+    "start",
+    "pause",
+    "resume",
+    "stop",
+    "cancel",
+    "steer",
+    "retry",
+    "redepend",
+    "update_prompt,
+    "draft",
+  ]),
   prompt: z.string().optional(),
+  /** redepend only — the task the blocked task should wait on instead. */
+  dependsOnTaskId: z.string().optional(),
 });
 
 export async function PATCH(req: NextRequest, ctx: Params) {
@@ -32,7 +45,7 @@ export async function PATCH(req: NextRequest, ctx: Params) {
     assertSameOrigin(req);
     await requireUser();
     const { id } = await ctx.params;
-    const { action, prompt } = PatchSchema.parse(await req.json());
+    const { action, prompt, dependsOnTaskId } = PatchSchema.parse(await req.json());
     const task = await db.task.findUnique({ where: { id } });
     if (!task) throw new ApiError(404, "task not found");
 
@@ -71,6 +84,40 @@ export async function PATCH(req: NextRequest, ctx: Params) {
         await emitEvent(id, "STEER", { text: prompt.trim() });
         break;
       }
+      case "redepend": {
+        // Point a blocked task at a different dependency (the stop dialog's
+        // "run after another task"). No status change: the task stays BLOCKED
+        // and the next tick queues it if/when the new dependency is DONE.
+        if (task.status !== "BLOCKED") {
+          throw new ApiError(409, `cannot change the dependency of a task that is ${task.status}`);
+        }
+        if (!dependsOnTaskId) throw new ApiError(400, "redepend requires a dependsOnTaskId");
+        if (dependsOnTaskId === id) throw new ApiError(400, "a task can't depend on itself");
+        const target = await db.task.findUnique({ where: { id: dependsOnTaskId } });
+        if (!target) throw new ApiError(404, "dependency task not found");
+        await assertNoCycle(id, target.id);
+        await db.task.update({ where: { id }, data: { dependsOnTaskId: target.id } });
+        // source: "system" is what puts the line in the highlights feed —
+        // untagged info logs are filtered out as tool-call spam
+        await emitEvent(id, "LOG", {
+          level: "info",
+          source: "system",
+          line: `dependency changed to task "${target.title}"`,
+        });
+        break;
+      }
+      case "draft": {
+        // "Run manually" — back to a draft with the dependency gate cleared, so
+        // it can't re-block once the user presses Start. Leave DRAFT first: a
+        // tick landing between the two writes would otherwise see a BLOCKED row
+        // with no dependency and promote it ("dependency missing"). A draft
+        // keeping a stale scheduledAt is harmless — promoteScheduled filters on
+        // status, exactly as after "Start now".
+        if (task.status !== "BLOCKED") {
+          throw new ApiError(409, `cannot switch a task that is ${task.status} to a draft`);
+        }
+        await transition(id, "DRAFT", { reason: "switched to manual start" });
+        await db.task.update({ where: { id }, data: { dependsOnTaskId: null } });
       case "update_prompt": {
         // Rewriting the row is the whole job: a pre-start task has no container
         // and no session, and the orchestrator reads Task.prompt when it builds
@@ -112,6 +159,30 @@ export async function PATCH(req: NextRequest, ctx: Params) {
     return NextResponse.json({ ok: true });
   } catch (err) {
     return apiError(err);
+  }
+}
+
+/**
+ * Reject a dependency that would deadlock both tasks: walk the target's own
+ * dependsOn chain upward and fail if it comes back around to taskId. Chains are
+ * short, and the visited set keeps a pre-existing cycle from looping forever.
+ */
+async function assertNoCycle(taskId: string, targetId: string): Promise<void> {
+  const seen = new Set<string>([targetId]);
+  let cursor: string | null = targetId;
+  while (cursor) {
+    const node: { dependsOnTaskId: string | null } | null = await db.task.findUnique({
+      where: { id: cursor },
+      select: { dependsOnTaskId: true },
+    });
+    const next: string | null = node?.dependsOnTaskId ?? null;
+    if (!next) return;
+    if (next === taskId) {
+      throw new ApiError(409, "that task already depends on this one — pick a different task");
+    }
+    if (seen.has(next)) return;
+    seen.add(next);
+    cursor = next;
   }
 }
 

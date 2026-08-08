@@ -88,10 +88,6 @@ export function parseFindingSelection(answer: string, count: number): number[] {
 export const CYCLE_CAP_OPTION_CONTINUE = "Run another fix cycle";
 export const CYCLE_CAP_OPTION_CANCEL = "Cancel the task";
 
-/** Dependency-failed question options (§5 tick step 2). */
-export const DEP_OPTION_PROCEED = "Proceed anyway";
-export const DEP_OPTION_CANCEL = "Cancel the task";
-
 /** Question.stageRunId value for questions created by the orchestrator (no real stage run). */
 export const ORCHESTRATOR_STAGE_RUN_ID = "orchestrator";
 
