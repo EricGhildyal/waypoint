@@ -11,7 +11,10 @@ export const ALLOWED_TRANSITIONS: Record<TaskStatus, TaskStatus[]> = {
   DRAFT: ["QUEUED", "CANCELLED"],
   QUEUED: ["DRAFT", "SCHEDULED", "BLOCKED", "PLANNING", "CANCELLED", "FAILED"],
   SCHEDULED: ["QUEUED", "CANCELLED"],
-  BLOCKED: ["QUEUED", "NEEDS_INPUT", "CANCELLED"],
+  // a blocked task only leaves when its dependency is DONE (or the user starts
+  // it, switches it back to a draft, or cancels it) — a failed dependency never
+  // starts it
+  BLOCKED: ["QUEUED", "DRAFT", "CANCELLED"],
   PLANNING: [
     "AWAITING_PLAN_APPROVAL",
     // plan approved while the task sat paused: the runner's IMPLEMENTATION
