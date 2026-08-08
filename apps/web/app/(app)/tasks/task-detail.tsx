@@ -33,6 +33,7 @@ import { BudgetBar } from "./budget-bar";
 import { isHighlight } from "./event-line";
 import type { FeedEvent } from "./stage-run-groups";
 import { StageRunList } from "./stage-run-list";
+import { StopTaskDialog } from "./stop-task-dialog";
 
 // Mobile-only view switcher; desktop shows both columns side by side.
 const VIEW_OPTIONS: ReadonlyArray<ButtonGroupOption<"activity" | "checklist">> = [
@@ -97,6 +98,7 @@ export function TaskDetailView({ initial, focus }: { initial: TaskDetail; focus:
 
   const [view, setView] = useState<"activity" | "checklist">("activity");
   const [busy, setBusy] = useState(false);
+  const [stopOpen, setStopOpen] = useState(false);
 
   const action = useCallback(
     async (name: string, prompt?: string) => {
@@ -122,6 +124,9 @@ export function TaskDetailView({ initial, focus }: { initial: TaskDetail; focus:
   // "Start now" queues a draft, and force-queues a scheduled/blocked task ahead
   // of its gate — once queued the time/dependency is no longer waited on.
   const startable = ["DRAFT", "SCHEDULED", "BLOCKED"].includes(task.status);
+  // Cancelling this task would strand these forever (a blocked task only starts
+  // when its dependency is DONE), so Stop asks what to do with each of them.
+  const blockedDependents = task.dependents.filter((d) => d.status === "BLOCKED");
 
   return (
     <div className="space-y-4">
@@ -184,7 +189,11 @@ export function TaskDetailView({ initial, focus }: { initial: TaskDetail; focus:
               variant="danger"
               disabled={busy}
               onClick={() => {
-                if (confirm("Stop and cancel this task?")) void action("stop");
+                if (blockedDependents.length) {
+                  setStopOpen(true);
+                } else if (confirm("Stop and cancel this task?")) {
+                  void action("stop");
+                }
               }}
             >
               Stop
@@ -244,6 +253,14 @@ export function TaskDetailView({ initial, focus }: { initial: TaskDetail; focus:
           <ChecklistPanel items={task.checklist ?? []} />
         </aside>
       </div>
+
+      <StopTaskDialog
+        taskId={task.id}
+        blockedDependents={blockedDependents}
+        open={stopOpen}
+        onClose={() => setStopOpen(false)}
+        onDone={() => mutate(`/api/tasks/${task.id}`)}
+      />
     </div>
   );
 }

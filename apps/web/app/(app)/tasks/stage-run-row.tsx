@@ -192,6 +192,7 @@ export function SectionRow({
           {section.findings.map((f) => (
             <FindingsCard
               key={`${f.kind}-${f.attempt}`}
+              taskId={task.id}
               view={f}
               cyclesUsed={f.kind === "review" ? task.reviewCycles : task.testingCycles}
             />
