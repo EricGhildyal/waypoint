@@ -88,6 +88,29 @@ test.describe("stage-run list (history task)", () => {
   });
 });
 
+test.describe("review gate (findings task)", () => {
+  // The gate and the findings artifact describe the same review round, so they
+  // render as ONE card — the "Review cycle N" card IS the approval step. This
+  // guards the regression where both were drawn and every finding appeared
+  // twice on the page.
+  test("the Review cycle card is the approval step, not a second box", async ({ page }) => {
+    await page.goto(`/tasks/${FIXTURES.findingsTaskId}`);
+
+    await expect(page.getByText("Review cycle 1")).toBeVisible();
+    await expect(page.getByText("Changes requested")).toBeVisible();
+    await expect(page.getByRole("checkbox")).toHaveCount(2);
+    await expect(page.getByRole("button", { name: "Fix 2 findings" })).toBeVisible();
+    await expect(page.getByText("Review cycles used: 1/3")).toBeVisible();
+
+    // no separate "Review findings — N need your approval" box (the task title
+    // also contains "review findings", so match the old heading exactly), and
+    // no finding printed twice
+    await expect(page.getByText(/Review findings\s+—/)).toHaveCount(0);
+    const body = await page.locator("body").innerText();
+    expect(body.split("Session cookie is written without the Secure flag.")).toHaveLength(2);
+  });
+});
+
 test.describe("placeholders (running task)", () => {
   test("un-started pipeline stages show as disabled grayed rows", async ({ page }) => {
     await page.goto(`/tasks/${FIXTURES.steerTaskId}`);

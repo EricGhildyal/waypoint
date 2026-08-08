@@ -3,7 +3,7 @@
 import clsx from "clsx";
 import { useState } from "react";
 import { useSWRConfig } from "swr";
-import { Badge, Button, Card, Checkbox, Subheading } from "@/components/catalyst";
+import { Badge, Button, Checkbox } from "@/components/catalyst";
 import { apiFetch } from "@/lib/format";
 import type { QuestionView } from "@/lib/task-detail";
 
@@ -23,6 +23,9 @@ const CATEGORY_LABELS: Record<string, string> = {
  * fix on its own authority. Only ticked findings are sent back to the
  * implementation session — everything left unticked is dropped. Readability and
  * simplification findings ride along automatically and are shown read-only.
+ *
+ * Card-less on purpose: this is the body of the round's `Review cycle N` card
+ * (see findings-card.tsx), which supplies the heading and verdict badge.
  */
 export function FindingsApproval({ taskId, question }: { taskId: string; question: QuestionView }) {
   const { mutate } = useSWRConfig();
@@ -30,14 +33,21 @@ export function FindingsApproval({ taskId, question }: { taskId: string; questio
   const gated = items.filter((item) => !item.auto);
   const auto = items.filter((item) => item.auto);
 
-  // default to fixing everything — the review already judged these worth doing,
-  // so the interaction is "untick what you don't want"
+  const open = question.status === "OPEN";
+
+  // Default to fixing everything — the review already judged these worth doing,
+  // so the interaction is "untick what you don't want".
   const [approved, setApproved] = useState<number[]>(() =>
     gated.map((item) => item.number).filter((n): n is number => n !== null),
   );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const open = question.status === "OPEN";
+
+  // Derived at render, not seeded into state: once the gate is answered this
+  // card is the only record of the round, and the answer can land from the
+  // approval email or another tab while this page is open. Reading it off the
+  // polled question keeps the ticks honest without a reload.
+  const selection = open ? approved : (question.approvedNumbers ?? []);
 
   function toggle(number: number) {
     setApproved((prev) =>
@@ -66,11 +76,13 @@ export function FindingsApproval({ taskId, question }: { taskId: string; questio
   const allSelected = approved.length === gated.length;
 
   return (
-    <Card className="space-y-3 border-amber-900/50">
+    <div className="space-y-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <Subheading>
-          Review findings — {gated.length} need{gated.length === 1 ? "s" : ""} your approval
-        </Subheading>
+        <p className="text-sm font-medium text-zinc-300">
+          {open
+            ? `${gated.length} need${gated.length === 1 ? "s" : ""} your approval`
+            : `${selection.length}/${gated.length} approved for fixing`}
+        </p>
         {open ? (
           <button
             type="button"
@@ -87,9 +99,11 @@ export function FindingsApproval({ taskId, question }: { taskId: string; questio
           </button>
         ) : null}
       </div>
-      <p className="text-xs text-zinc-500">
-        Only the findings you tick get fixed; the rest are dropped and the task moves on.
-      </p>
+      {open ? (
+        <p className="text-xs text-zinc-500">
+          Only the findings you tick get fixed; the rest are dropped and the task moves on.
+        </p>
+      ) : null}
 
       <ul className="space-y-1.5">
         {gated.map((item) => (
@@ -102,7 +116,7 @@ export function FindingsApproval({ taskId, question }: { taskId: string; questio
             >
               <Checkbox
                 className="mt-0.5"
-                checked={item.number !== null && approved.includes(item.number)}
+                checked={item.number !== null && selection.includes(item.number)}
                 disabled={!open || busy}
                 onChange={() => item.number !== null && toggle(item.number)}
               />
@@ -160,7 +174,7 @@ export function FindingsApproval({ taskId, question }: { taskId: string; questio
       ) : (
         <p className="text-xs text-zinc-500">Answered: {question.answer}</p>
       )}
-    </Card>
+    </div>
   );
 }
 
