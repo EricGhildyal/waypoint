@@ -27,6 +27,9 @@ export const EVENT_PAYLOAD_SCHEMAS = {
   QUESTION: z.object({ questionId: z.string() }),
   ANSWER: z.object({ questionId: z.string(), via: z.enum(["UI", "EMAIL"]) }),
   STEER: z.object({ text: z.string() }),
+  // No payload: the Prompt panel always shows the current text, so recording
+  // that a rewrite happened is enough — no need to duplicate the prompt here.
+  PROMPT_UPDATED: z.object({}),
   LOG: z.object({
     level: z.enum(["debug", "info", "warn", "error"]),
     line: z.string().max(500),
@@ -112,6 +115,42 @@ export const FindingApprovalItemSchema = z.object({
 export type FindingApprovalItem = z.infer<typeof FindingApprovalItemSchema>;
 
 // ---------------------------------------------------------------------------
+// Claude usage windows — one reading per plan limit window, for the settings
+// page bars. Mirrors `SDKRateLimitInfo.rateLimitType` from the Agent SDK.
+// ---------------------------------------------------------------------------
+
+/** Display order, not just membership — the settings card renders in this order. */
+export const USAGE_WINDOW_TYPES = [
+  "five_hour",
+  "seven_day",
+  "seven_day_opus",
+  "seven_day_sonnet",
+  "seven_day_overage_included",
+  "overage",
+] as const;
+export type UsageWindowType = (typeof USAGE_WINDOW_TYPES)[number];
+
+export function isUsageWindowType(value: string): value is UsageWindowType {
+  return (USAGE_WINDOW_TYPES as readonly string[]).includes(value);
+}
+
+/**
+ * `type` is deliberately an open string rather than an enum. Anthropic can name
+ * a window we don't list (the SDK's own list already lags — it still says
+ * "opus" for what is now Fable), and a closed enum here would 400 the WHOLE
+ * sync payload: the runner re-queues on failure, so one unknown window name
+ * would wedge that runner's syncs forever and the task would die of a lost
+ * heartbeat. Unknown names are dropped downstream in recordUsageWindows
+ * instead — a missing cosmetic bar must never cost a running task.
+ */
+export const UsageWindowSchema = z.object({
+  type: z.string(),
+  utilization: z.number(),
+  resetsAt: z.string().optional(),
+});
+export type UsageWindow = z.infer<typeof UsageWindowSchema>;
+
+// ---------------------------------------------------------------------------
 // Runner sync protocol (§6) — the runner's ONLY channel to the host.
 // ---------------------------------------------------------------------------
 
@@ -176,6 +215,10 @@ export const SyncRequestSchema = z.object({
   rateLimitWarning: z
     .object({ utilization: z.number().optional(), resetsAt: z.string().optional() })
     .optional(),
+  // Latest reading per Claude limit window — display only, feeds the settings
+  // page bars. The API names one binding window per response, so a sync carries
+  // at most a handful; 8 is the six known types plus headroom.
+  usageWindows: z.array(UsageWindowSchema).max(8).optional(),
 });
 export type SyncRequest = z.infer<typeof SyncRequestSchema>;
 

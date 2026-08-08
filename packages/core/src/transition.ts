@@ -161,6 +161,17 @@ export async function transition(
       },
     });
 
+    if (terminal) {
+      // A stage run still marked RUNNING when the task ends never reported a
+      // stage end (crash, infra failure, heartbeat loss, cancel) — by definition
+      // it did not finish, so close it out as a failure rather than leaving the
+      // task page spinning forever.
+      await tx.stageRun.updateMany({
+        where: { taskId, status: "RUNNING" },
+        data: { status: "FAILED", endedAt: new Date() },
+      });
+    }
+
     await tx.event.create({
       data: {
         taskId,

@@ -100,8 +100,10 @@ export function TaskDetailView({ initial, focus }: { initial: TaskDetail; focus:
   const [busy, setBusy] = useState(false);
   const [stopOpen, setStopOpen] = useState(false);
 
+  // Resolves true when the PATCH succeeded — callers that own an open editor
+  // (the prompt editor) keep it open with the user's text on a failure.
   const action = useCallback(
-    async (name: string, prompt?: string) => {
+    async (name: string, prompt?: string): Promise<boolean> => {
       setBusy(true);
       try {
         await apiFetch(`/api/tasks/${task.id}`, {
@@ -109,8 +111,10 @@ export function TaskDetailView({ initial, focus }: { initial: TaskDetail; focus:
           body: JSON.stringify({ action: name, ...(prompt ? { prompt } : {}) }),
         });
         await mutate(`/api/tasks/${task.id}`);
+        return true;
       } catch (err) {
         alert(err instanceof Error ? err.message : String(err));
+        return false;
       } finally {
         setBusy(false);
       }
@@ -127,6 +131,9 @@ export function TaskDetailView({ initial, focus }: { initial: TaskDetail; focus:
   // Cancelling this task would strand these forever (a blocked task only starts
   // when its dependency is DONE), so Stop asks what to do with each of them.
   const blockedDependents = task.dependents.filter((d) => d.status === "BLOCKED");
+  // The same pre-start statuses: nothing has run, so the prompt can still be
+  // rewritten. Mid-run direction goes through the steer box instead.
+  const promptEditable = ["DRAFT", "SCHEDULED", "BLOCKED"].includes(task.status);
 
   return (
     <div className="space-y-4">
@@ -215,7 +222,12 @@ export function TaskDetailView({ initial, focus }: { initial: TaskDetail; focus:
 
       <GateNote task={task} />
 
-      <PromptPanel prompt={task.prompt} />
+      <PromptPanel
+        prompt={task.prompt}
+        editable={promptEditable}
+        busy={busy}
+        onSave={(next) => action("update_prompt", next)}
+      />
 
       {task.status === "FAILED" && task.failureCode ? (
         <Card className="border-red-900/60 bg-red-950/20">
@@ -295,7 +307,7 @@ function GateNote({ task }: { task: TaskDetail }) {
   );
 }
 
-const RetrySchema = Yup.object({
+const PromptSchema = Yup.object({
   prompt: Yup.string().trim().required("The prompt can’t be empty"),
 });
 
@@ -311,13 +323,13 @@ function RetryButton({
 }: {
   task: TaskDetail;
   busy: boolean;
-  onRetry: (name: string, prompt?: string) => Promise<void>;
+  onRetry: (name: string, prompt?: string) => Promise<boolean>;
 }) {
   const [open, setOpen] = useState(false);
   const formik = useFormik({
     initialValues: { prompt: task.prompt },
     enableReinitialize: true,
-    validationSchema: RetrySchema,
+    validationSchema: PromptSchema,
     onSubmit: async (values, helpers) => {
       await onRetry("retry", values.prompt.trim());
       helpers.setSubmitting(false);
@@ -361,27 +373,103 @@ function RetryButton({
 }
 
 /**
- * Read-only view of the task's prompt, one click away above the stage-run list.
- * It is an uncontrolled <details> so the open/closed state survives the page's
- * 2.5s SWR re-renders without any state plumbing.
+ * The task's prompt, one click away above the stage-run list. Read-only once a
+ * task has started; before that (draft/scheduled/blocked) it can be rewritten in
+ * place. It is an uncontrolled <details> so the open/closed state survives the
+ * page's 2.5s SWR re-renders without any state plumbing.
  */
-function PromptPanel({ prompt }: { prompt: string }) {
+function PromptPanel({
+  prompt,
+  editable,
+  busy,
+  onSave,
+}: {
+  prompt: string;
+  editable: boolean;
+  busy: boolean;
+  onSave: (prompt: string) => Promise<boolean>;
+}) {
+  const [editing, setEditing] = useState(false);
+  // closes itself if the task starts running while the panel sits open
+  const isEditing = editing && editable;
+
   return (
     <details className="rounded-xl border border-zinc-800 bg-zinc-900/50">
       <summary className="cursor-pointer select-none px-4 py-3 text-sm font-semibold text-zinc-200">
         Prompt
       </summary>
       <div className="border-t border-zinc-800 p-4">
-        {prompt.trim() ? (
-          // plain text, not markdown: the prompt as the author actually wrote it
-          <p className="feed-scroll max-h-80 overflow-y-auto whitespace-pre-wrap wrap-break-word text-sm text-zinc-300">
-            {prompt}
-          </p>
+        {isEditing ? (
+          <PromptEditor
+            initial={prompt}
+            busy={busy}
+            onSave={onSave}
+            onDone={() => setEditing(false)}
+          />
         ) : (
-          <p className="text-sm text-zinc-500">No prompt recorded.</p>
+          <>
+            {prompt.trim() ? (
+              // plain text, not markdown: the prompt as the author actually wrote it
+              <p className="feed-scroll max-h-80 overflow-y-auto whitespace-pre-wrap wrap-break-word text-sm text-zinc-300">
+                {prompt}
+              </p>
+            ) : (
+              <p className="text-sm text-zinc-500">No prompt recorded.</p>
+            )}
+            {editable ? (
+              <div className="mt-3 flex justify-end">
+                <Button small variant="outline" onClick={() => setEditing(true)}>
+                  Edit
+                </Button>
+              </div>
+            ) : null}
+          </>
         )}
       </div>
     </details>
+  );
+}
+
+/**
+ * Mounted fresh when editing starts, so initialValues snapshot the prompt as it
+ * is right then and the 2.5s poll can't clobber what's being typed (same reason
+ * SteerForm has no enableReinitialize).
+ */
+function PromptEditor({
+  initial,
+  busy,
+  onSave,
+  onDone,
+}: {
+  initial: string;
+  busy: boolean;
+  onSave: (prompt: string) => Promise<boolean>;
+  onDone: () => void;
+}) {
+  const formik = useFormik({
+    initialValues: { prompt: initial },
+    validationSchema: PromptSchema,
+    onSubmit: async (values, helpers) => {
+      const ok = await onSave(values.prompt.trim());
+      helpers.setSubmitting(false);
+      // on failure the editor stays open with the user's text intact
+      if (ok) onDone();
+    },
+  });
+
+  return (
+    <form onSubmit={formik.handleSubmit} noValidate className="space-y-2">
+      <Textarea rows={10} {...formik.getFieldProps("prompt")} />
+      <ErrorText>{fieldError(formik, "prompt")}</ErrorText>
+      <div className="flex justify-end gap-2">
+        <Button type="button" small variant="outline" onClick={onDone}>
+          Cancel
+        </Button>
+        <Button type="submit" small variant="primary" disabled={busy} loading={formik.isSubmitting}>
+          Save
+        </Button>
+      </div>
+    </form>
   );
 }
 
@@ -389,7 +477,7 @@ const SteerSchema = Yup.object({
   text: Yup.string().trim().required("Write a steering message first"),
 });
 
-function SteerForm({ onSteer }: { onSteer: (name: string, prompt?: string) => Promise<void> }) {
+function SteerForm({ onSteer }: { onSteer: (name: string, prompt?: string) => Promise<boolean> }) {
   const formik = useFormik({
     initialValues: { text: "" },
     validationSchema: SteerSchema,

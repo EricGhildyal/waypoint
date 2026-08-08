@@ -1,4 +1,4 @@
-import { db, getAllSettings } from "@waypoint/core";
+import { db, getAllSettings, parseUsageWindows } from "@waypoint/core";
 import { SettingsForm } from "./settings-form";
 
 export const dynamic = "force-dynamic";
@@ -20,6 +20,7 @@ export default async function SettingsPage() {
     <SettingsForm
       initialSettings={settings}
       initialModels={models}
+      usageWindows={parseUsageWindows(settings.usageWindows ?? "")}
       initialEmails={allowedEmails.map((e) => e.email)}
       claudeTokenSet={Boolean(claudeToken)}
       githubPatSet={Boolean(gitPat)}

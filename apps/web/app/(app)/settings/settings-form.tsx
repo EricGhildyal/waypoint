@@ -1,5 +1,6 @@
 "use client";
 
+import type { StoredUsageWindow } from "@waypoint/core";
 import { useFormik } from "formik";
 import { useState } from "react";
 import * as Yup from "yup";
@@ -17,17 +18,20 @@ import {
 } from "@/components/catalyst";
 import { ErrorText, fieldError, urlOrLocalhost } from "@/components/form-utils";
 import { apiFetch } from "@/lib/format";
+import { UsageLimitsCard } from "./usage-limits-card";
 
 export function SettingsForm({
   initialSettings,
   initialModels,
   initialEmails,
+  usageWindows,
   claudeTokenSet,
   githubPatSet,
 }: {
   initialSettings: Record<string, string>;
   initialModels: string[];
   initialEmails: string[];
+  usageWindows: StoredUsageWindow[];
   claudeTokenSet: boolean;
   githubPatSet: boolean;
 }) {
@@ -38,6 +42,7 @@ export function SettingsForm({
   return (
     <div className="mx-auto max-w-2xl space-y-4">
       <Heading>Settings</Heading>
+      <UsageLimitsCard windows={usageWindows} />
       <ExecutionSettings
         initialSettings={initialSettings}
         models={models}

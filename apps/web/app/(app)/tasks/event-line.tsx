@@ -17,6 +17,7 @@ const HIGHLIGHT_TYPES = new Set([
   "QUESTION",
   "ANSWER",
   "STEER",
+  "PROMPT_UPDATED",
   "ERROR",
   "REVIEW_FINDINGS",
   "TEST_FINDINGS",
@@ -44,6 +45,7 @@ const EVENT_STYLES: Record<string, string> = {
   QUESTION: "text-amber-300",
   ANSWER: "text-green-300",
   STEER: "text-indigo-300",
+  PROMPT_UPDATED: "text-indigo-300",
   PR_OPENED: "text-green-300",
   REVIEW_FINDINGS: "text-cyan-300",
   TEST_FINDINGS: "text-cyan-300",
@@ -75,6 +77,9 @@ export function EventLine({ event }: { event: FeedEvent }) {
       break;
     case "STEER":
       text = `steer: ${p.text}`;
+      break;
+    case "PROMPT_UPDATED":
+      text = "task prompt updated";
       break;
     case "PR_OPENED":
       text = `PR opened: ${p.url}`;

@@ -78,6 +78,18 @@ export type SyncStage =
       artifacts?: Array<{ name: string; content: string }>;
     };
 
+/**
+ * One Claude plan limit window reading, from `SDKRateLimitInfo`. `type` is the
+ * SDK's `rateLimitType` passed through verbatim as an open string — the host
+ * decides which names it knows how to display, so a window name the SDK adds
+ * later rides through instead of failing this runner's syncs.
+ */
+export interface UsageWindow {
+  type: string;
+  utilization: number;
+  resetsAt?: string;
+}
+
 export interface SyncRequest {
   cursor: string | null;
   events?: SyncEvent[];
@@ -88,6 +100,8 @@ export interface SyncRequest {
   rateLimit?: { resetsAt: string };
   /** SDK `allowed_warning` rate-limit event — display only, never pauses (§5). */
   rateLimitWarning?: { utilization?: number; resetsAt?: string };
+  /** Latest reading per Claude limit window — display only (settings page bars). */
+  usageWindows?: UsageWindow[];
 }
 
 export type InboxItem =
