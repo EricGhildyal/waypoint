@@ -111,6 +111,30 @@ export const FindingApprovalItemSchema = z.object({
 export type FindingApprovalItem = z.infer<typeof FindingApprovalItemSchema>;
 
 // ---------------------------------------------------------------------------
+// Claude usage windows — one reading per plan limit window, for the settings
+// page bars. Mirrors `SDKRateLimitInfo.rateLimitType` from the Agent SDK.
+// ---------------------------------------------------------------------------
+
+/** Display order, not just membership — the settings card renders in this order. */
+export const USAGE_WINDOW_TYPES = [
+  "five_hour",
+  "seven_day",
+  "seven_day_opus",
+  "seven_day_sonnet",
+  "seven_day_overage_included",
+  "overage",
+] as const;
+export type UsageWindowType = (typeof USAGE_WINDOW_TYPES)[number];
+
+export const UsageWindowSchema = z.object({
+  type: z.enum(USAGE_WINDOW_TYPES),
+  utilization: z.number(),
+  resetsAt: z.string().optional(),
+  status: z.enum(["allowed", "allowed_warning", "rejected"]).optional(),
+});
+export type UsageWindow = z.infer<typeof UsageWindowSchema>;
+
+// ---------------------------------------------------------------------------
 // Runner sync protocol (§6) — the runner's ONLY channel to the host.
 // ---------------------------------------------------------------------------
 
@@ -175,6 +199,10 @@ export const SyncRequestSchema = z.object({
   rateLimitWarning: z
     .object({ utilization: z.number().optional(), resetsAt: z.string().optional() })
     .optional(),
+  // Latest reading per Claude limit window — display only, feeds the settings
+  // page bars. The API names one binding window per response, so a sync carries
+  // at most a handful; 8 is the six known types plus headroom.
+  usageWindows: z.array(UsageWindowSchema).max(8).optional(),
 });
 export type SyncRequest = z.infer<typeof SyncRequestSchema>;
 
