@@ -42,7 +42,7 @@ function testRules(project: RunnerConfig["meta"]["project"]): {
 }
 
 export function renderPrompt(
-  name: "planning" | "implementation" | "review" | "testing",
+  name: "planning" | "implementation" | "review" | "testing" | "merge",
   config: RunnerConfig,
   extra: Record<string, string> = {},
 ): string {

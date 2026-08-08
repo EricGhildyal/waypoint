@@ -11,7 +11,7 @@ import {
 } from "./stages";
 import { StopRequested, Syncer } from "./sync";
 import { runVerify } from "./verify";
-import { InfraFailure, prepareWorkspace } from "./workspace";
+import { InfraFailure, abortLeftoverMerge, prepareWorkspace } from "./workspace";
 
 /**
  * The runner (§6): executes the pipeline inside its task container. Its ONLY
@@ -38,6 +38,14 @@ async function main(): Promise<void> {
         setupDone: true,
         phase: state.get().phase === "SETUP" ? "PLANNING" : state.get().phase,
       });
+    }
+
+    // A container that died during the pre-push sync leaves a conflicted merge
+    // on the volume. Clear it before any stage touches git: a stage that
+    // commits (commitLeftovers) would otherwise conclude that merge and push
+    // the conflict markers.
+    if (await abortLeftoverMerge(config)) {
+      sync.log("warn", "discarded a merge left in progress by a previous container");
     }
 
     pipeline: for (;;) {
