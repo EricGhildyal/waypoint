@@ -189,13 +189,6 @@ export function SectionRow({
           {planReplies.map((q) => (
             <PlanReply key={q.id} question={q} />
           ))}
-          {section.findings.map((f) => (
-            <FindingsCard
-              key={`${f.kind}-${f.attempt}`}
-              view={f}
-              cyclesUsed={f.kind === "review" ? task.reviewCycles : task.testingCycles}
-            />
-          ))}
           <p className="text-xs text-zinc-500">
             <a
               className="text-indigo-400 hover:underline"

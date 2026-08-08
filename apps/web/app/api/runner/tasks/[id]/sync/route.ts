@@ -9,6 +9,7 @@ import {
   RUNNING_STAGE_STATUSES,
   STAGE_TO_STATUS,
   SyncRequestSchema,
+  TERMINAL_STATUSES,
   VERIFY_PROMPT_SENTINEL,
   artifactDir,
   artifactPath,
@@ -152,18 +153,23 @@ async function handleStageStart(
 ) {
   const key = { taskId: task.id, stage: stage.stage, attempt: stage.attempt };
   const existing = await db.stageRun.findUnique({ where: { taskId_stage_attempt: key } });
+  let run: { id: string };
   if (existing) {
-    // idempotent re-send — the runner repeats the start once the session id is known
-    await db.stageRun.update({
+    // idempotent re-send — the runner repeats the start once the session id is
+    // known. A terminal task's runner can still sync (its token stays valid for
+    // Retry), so only reopen the row while the task is still in flight —
+    // otherwise the re-send would flip a closed-out run back into a spinner.
+    run = await db.stageRun.update({
       where: { id: existing.id },
       data: {
         sessionId: stage.sessionId ?? existing.sessionId,
-        status: "RUNNING",
-        endedAt: null,
+        ...(TERMINAL_STATUSES.includes(task.status)
+          ? {}
+          : { status: "RUNNING" as const, endedAt: null }),
       },
     });
   } else {
-    const run = await db.stageRun.create({
+    run = await db.stageRun.create({
       data: {
         ...key,
         model: stage.model,
@@ -178,6 +184,14 @@ async function handleStageStart(
       run.id,
     );
   }
+
+  // A newer attempt starting proves any other still-RUNNING run on this task was
+  // abandoned (heartbeat-loss restart, resume after a pause, retry) — close it
+  // out so it stops spinning.
+  await db.stageRun.updateMany({
+    where: { taskId: task.id, status: "RUNNING", id: { not: run.id } },
+    data: { status: "FAILED", endedAt: new Date() },
+  });
 
   if (isVerify) return; // verify runs stay in PLANNING until the end
 
