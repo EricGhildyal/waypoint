@@ -16,6 +16,7 @@ import {
   db,
   emitEvent,
   isAutoFixCategory,
+  recordUsageWindows,
   setSetting,
   transcriptPath,
   transition,
@@ -107,6 +108,9 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
       JSON.stringify({ ...body.rateLimitWarning, reportedAt: new Date().toISOString() }),
     );
   }
+
+  // latest utilization per Claude limit window — display only (settings bars)
+  if (body.usageWindows?.length) await recordUsageWindows(body.usageWindows);
 
   if (body.rateLimit) {
     // every task shares the one Claude Max OAuth token (§5) — when one runner

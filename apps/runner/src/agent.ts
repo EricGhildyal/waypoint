@@ -363,6 +363,16 @@ async function executeQuery(
             resetsAt: resetsAtFrom(info) ?? undefined,
           });
         }
+        // Every status, warning or not: `allowed` is the common case and the
+        // whole point of the settings-page usage bars. The API names one
+        // binding window per response, so the picture fills in over time.
+        if (info.rateLimitType && typeof info.utilization === "number") {
+          sync.reportUsageWindow({
+            type: info.rateLimitType,
+            utilization: info.utilization,
+            resetsAt: resetsAtFrom(info) ?? undefined,
+          });
+        }
         continue;
       }
 

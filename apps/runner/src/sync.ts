@@ -9,6 +9,7 @@ import type {
   SyncResponse,
   SyncStage,
   SyncUsage,
+  UsageWindow,
 } from "./types";
 
 export class StopRequested extends Error {
@@ -31,6 +32,7 @@ export class Syncer {
   private stageMsgs: SyncStage[] = [];
   private rateLimit: { resetsAt: string } | null = null;
   private rateLimitWarning: { utilization?: number; resetsAt?: string } | null = null;
+  private usageWindows = new Map<string, UsageWindow>();
 
   private steeringQueue: Array<{ id: string; text: string }> = [];
   private answerQueue: Array<{ id: string; questionId: string; answer: string }> = [];
@@ -111,6 +113,14 @@ export class Syncer {
     this.rateLimitWarning = warning;
   }
 
+  /**
+   * One Claude limit window's utilization — latest wins per window type, rides
+   * the next 3s sync. Display only: the settings page bars, nothing else.
+   */
+  reportUsageWindow(window: UsageWindow): void {
+    this.usageWindows.set(window.type, window);
+  }
+
   // --- questions & answers -------------------------------------------------
 
   /** Send a question and block until its answer arrives via the inbox. */
@@ -165,6 +175,7 @@ export class Syncer {
         !this.usage &&
         !this.rateLimit &&
         !this.rateLimitWarning &&
+        this.usageWindows.size === 0 &&
         !this.checklist
       ) {
         return;
@@ -202,6 +213,10 @@ export class Syncer {
       body.rateLimitWarning = this.rateLimitWarning;
       this.rateLimitWarning = null;
     }
+    if (this.usageWindows.size) {
+      body.usageWindows = [...this.usageWindows.values()];
+      this.usageWindows.clear();
+    }
 
     try {
       const res = await fetch(
@@ -227,6 +242,7 @@ export class Syncer {
         if (body.rateLimitWarning && !this.rateLimitWarning) {
           this.rateLimitWarning = body.rateLimitWarning;
         }
+        this.requeueUsageWindows(body.usageWindows);
         return;
       }
       const data = (await res.json()) as SyncResponse;
@@ -242,10 +258,19 @@ export class Syncer {
       if (body.rateLimitWarning && !this.rateLimitWarning) {
         this.rateLimitWarning = body.rateLimitWarning;
       }
+      this.requeueUsageWindows(body.usageWindows);
     } finally {
       this.inflight = false;
       // there are queued stage messages or an explicit request — go again
       if (this.stageMsgs.length || this.syncNowRequested) setImmediate(() => void this.sync());
+    }
+  }
+
+  /** Put back windows a failed sync was carrying, per type — a reading queued
+   * while the request was inflight is newer, so it wins. */
+  private requeueUsageWindows(windows: UsageWindow[] | undefined): void {
+    for (const window of windows ?? []) {
+      if (!this.usageWindows.has(window.type)) this.usageWindows.set(window.type, window);
     }
   }
 

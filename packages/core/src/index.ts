@@ -9,5 +9,6 @@ export * from "./transition";
 export * from "./events";
 export * from "./schemas";
 export * from "./settings";
+export * from "./usage-windows";
 export * from "./branch";
 export * from "./paths";
