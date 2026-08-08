@@ -549,10 +549,13 @@ export async function runTesting(
 
     // testing success: the RUNNER pushes (it has the repo + PAT, §7); the
     // orchestrator opens the PR once the stage end lands (→ OPENING_PR).
-    // The browser agent is done, so stop the app before the sync: its
-    // post-merge test run is the one place the test command would otherwise
-    // race the dev server for a port or a database. The `finally` kill stays as
-    // the safety net for every other exit path.
+    // The browser agent is done, so start the app's shutdown before the sync:
+    // a post-merge test run is the one place the test command would otherwise
+    // race the dev server for a port or a database. kill() only sends SIGTERM
+    // and returns, so this narrows that window rather than closing it — good
+    // enough, since the run it protects only happens after an agent has spent
+    // minutes resolving conflicts. The `finally` kill stays as the safety net
+    // for every other exit path.
     app.kill();
     await syncAndPush(config, sync, state, attempt);
     const prMd =
@@ -588,28 +591,19 @@ async function syncAndPush(
   state.update({ phase: "PUSH" });
   const outcome = await syncWithDefaultBranch(config, sync);
 
-  if (outcome === "merged") {
-    // A conflict-free merge can still break the build — upstream renames what
-    // this branch calls, and git merges both sides without a murmur. Nobody
-    // reviews a fix made at this point, so this only reports: the PR opens
-    // mergeable either way, with the breakage visible instead of a surprise.
-    const gate = await runTestGate(config);
-    if (!gate.ok) {
-      sync.log(
-        "warn",
-        `the merge with ${config.meta.project.defaultBranch} was clean but the test gate now fails — pushing anyway, check the PR:\n${gate.feedback}`,
-      );
-    }
-  } else if (outcome === "conflicts") {
+  if (outcome === "conflicts") {
     // Deliberate simplification: the conflict agent runs as part of the TESTING
-    // stage run, so it shares that run's identity — its session id overwrites
-    // sessions.TESTING, its messages are appended to the same
+    // stage run, so it shares that run's identity. Its session id overwrites
+    // sessions.TESTING; its messages are appended to the same
     // testing-<attempt>.jsonl transcript the testing agent wrote (expect two
-    // sessions in one file), and in the skipTesting path, whose stageEnd sends
-    // no sessionId, the stage run ends up pointing at the merge session. All
-    // harmless: a crash in phase PUSH re-runs the whole testing stage as a fresh
-    // attempt anyway, and the leftover-merge abort is what makes that re-entry
-    // safe.
+    // sessions in one file); the re-sent stageStart carries the implementation
+    // model, so the host shows that TESTING run attributed to it; the fresh
+    // session clears the checklist tracker, so the testing agent's checklist in
+    // the UI is replaced by the merge agent's; and in the skipTesting path,
+    // whose stageEnd sends no sessionId, the stage run ends up pointing at the
+    // merge session. All harmless: a crash in phase PUSH re-runs the whole
+    // testing stage as a fresh attempt anyway, and the leftover-merge abort is
+    // what makes that re-entry safe.
     await resolveMergeConflicts(config, sync, state, attempt);
   }
   await pushBranch(config, sync);

@@ -227,7 +227,11 @@ export async function abortLeftoverMerge(config: RunnerConfig): Promise<boolean>
 
 /** Files left unmerged by an in-progress merge. */
 export async function conflictedFiles(config: RunnerConfig): Promise<string[]> {
-  const res = await run("git diff --name-only --diff-filter=U", { cwd: config.workspace });
+  // quotePath=false: a non-ASCII path would otherwise come back C-quoted, and
+  // the marker scan would silently skip the file it names
+  const res = await run("git -c core.quotePath=false diff --name-only --diff-filter=U", {
+    cwd: config.workspace,
+  });
   return res.output
     .split("\n")
     .map((line) => line.trim())

@@ -22,7 +22,7 @@ You are resolving merge conflicts in `/workspace`. A merge of `origin/{{DEFAULT_
 
 - **Never run `git merge --abort`, `git reset`, `git rebase`, or `git push`.** The merge must end in a commit.
 - **Never take `--ours` or `--theirs` wholesale** to make a conflict go away. Only after reading both sides and concluding that one side genuinely supersedes the other is picking a side correct.
-- **Leave no conflict markers.** `git diff --check` and a search for `<<<<<<<` must both come back clean.
+- **Leave no conflict markers.** Run `git diff --check` before you stage a file, and `git grep -n '^<<<<<<< ' HEAD -- <the files you resolved>` after the merge commit — both must come back empty. Staging a file does not make its markers go away; the harness checks the committed content and will send it back to you.
 - **Touch nothing unrelated.** No refactors, no drive-by fixes, no new features — only the conflicted regions and whatever mechanical follow-up an upstream rename forces (e.g. updating a call site so the code still compiles).
 - If a conflict is genuinely ambiguous and getting it wrong would break behavior, use `ask_user` rather than guessing.
 
