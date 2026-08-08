@@ -108,26 +108,29 @@ export async function ensureBranch(config: RunnerConfig, sync: Syncer): Promise<
   const current = await run("git rev-parse --abbrev-ref HEAD", { cwd: ws });
   if (current.output.trim() === branch) return;
 
+  // Switch back to a branch that already exists (restart mid-task) rather than
+  // re-pointing it — `checkout -B` would reset it and throw away the work.
+  const known = await run(`git rev-parse --verify --quiet 'refs/heads/${branch}'`, { cwd: ws });
+  if (known.code === 0) {
+    sync.log("info", `switching to branch ${branch}`);
+    const res = await run(`git checkout '${branch}'`, { cwd: ws });
+    if (res.code !== 0) {
+      throw new InfraFailure("GIT_CLONE", "failed to switch to the task branch", tail(res.output));
+    }
+    return;
+  }
+
   // A brand-new task branch is based on a freshly fetched origin/<default>:
   // planning plus the plan-approval wait can leave the clone hours stale, and
-  // every commit of that staleness turns into a conflict later. An existing
-  // branch is never re-pointed — that would throw away the task's own work.
-  const known = await run(`git rev-parse --verify --quiet 'refs/heads/${branch}'`, { cwd: ws });
-  let startPoint = "";
-  if (known.code !== 0) {
-    const fetched = await run(`git fetch origin '${defaultBranch}'`, {
-      cwd: ws,
-      timeoutMs: 5 * 60 * 1000,
-    });
-    if (fetched.code === 0) {
-      startPoint = ` 'origin/${defaultBranch}'`;
-    } else {
-      sync.log(
-        "warn",
-        `could not fetch origin/${defaultBranch} — branching from the existing checkout`,
-      );
-    }
+  // every commit of that staleness turns into a conflict at PR time.
+  const fetched = await run(`git fetch origin '${defaultBranch}'`, {
+    cwd: ws,
+    timeoutMs: 5 * 60 * 1000,
+  });
+  if (fetched.code !== 0) {
+    sync.log("warn", `could not fetch origin/${defaultBranch} — branching from the local checkout`);
   }
+  const startPoint = fetched.code === 0 ? ` 'origin/${defaultBranch}'` : "";
 
   sync.log("info", `creating branch ${branch}`);
   const res = await run(`git checkout -B '${branch}'${startPoint}`, { cwd: ws });
