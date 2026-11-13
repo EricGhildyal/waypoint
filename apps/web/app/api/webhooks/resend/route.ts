@@ -76,9 +76,13 @@ export async function POST(req: NextRequest) {
   }
 
   // 3) Strip quoted reply text and record the answer.
-  const rawBody = data.text ?? stripHtml(data.html ?? "");
+  const content = data.text || data.html ? data : await fetchReceivedEmail(data.email_id);
+  const rawBody = content?.text || stripHtml(content?.html ?? "");
   const visible = new EmailReplyParser().read(rawBody).getVisibleText().trim();
-  if (!visible) return NextResponse.json({ ok: true });
+  if (!visible) {
+    console.warn(`[webhook] reply from ${from} for question ${question.id} had no readable body`);
+    return NextResponse.json({ ok: true });
+  }
 
   try {
     await applyAnswer(question.taskId, question.id, visible, "EMAIL");
@@ -88,9 +92,39 @@ export async function POST(req: NextRequest) {
   return NextResponse.json({ ok: true });
 }
 
+/**
+ * Resend's `email.received` webhook carries metadata only — the body has to be
+ * fetched by id (https://resend.com/docs/dashboard/receiving/get-email-content).
+ * Without this, every reply arrived with an empty body and was dropped.
+ */
+async function fetchReceivedEmail(
+  emailId: string | undefined,
+): Promise<{ text?: string | null; html?: string | null } | null> {
+  const apiKey = process.env.RESEND_API_KEY;
+  if (!emailId || !apiKey) {
+    console.warn("[webhook] cannot fetch the reply body: no email_id or RESEND_API_KEY");
+    return null;
+  }
+  try {
+    const res = await fetch(
+      `https://api.resend.com/emails/receiving/${encodeURIComponent(emailId)}`,
+      { headers: { authorization: `Bearer ${apiKey}` }, signal: AbortSignal.timeout(15_000) },
+    );
+    if (!res.ok) {
+      console.warn(`[webhook] fetching received email ${emailId} failed: ${res.status}`);
+      return null;
+    }
+    return (await res.json()) as { text?: string | null; html?: string | null };
+  } catch (err) {
+    console.warn(`[webhook] fetching received email ${emailId} failed: ${String(err)}`);
+    return null;
+  }
+}
+
 interface ResendInboundEvent {
   type?: string;
   data?: {
+    email_id?: string;
     from?: string | { email?: string };
     to?: Array<string | { email?: string }> | string | { email?: string };
     subject?: string;

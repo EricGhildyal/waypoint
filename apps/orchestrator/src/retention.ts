@@ -1,6 +1,6 @@
 import { promises as fs } from "node:fs";
 import { db, taskDataDir } from "@waypoint/core";
-import { removeVolume, volumeName } from "./docker";
+import { dockerVolumeName, removeVolume, volumeName } from "./docker";
 
 const LOG_RETENTION_DAYS = 30;
 const WORKSPACE_RETENTION_DAYS = 7;
@@ -25,6 +25,7 @@ export async function runRetention(): Promise<void> {
   });
   for (const task of expired) {
     await removeVolume(volumeName(task.id));
+    await removeVolume(dockerVolumeName(task.id));
     try {
       await fs.rm(taskDataDir(task.id), { recursive: true, force: true });
     } catch {

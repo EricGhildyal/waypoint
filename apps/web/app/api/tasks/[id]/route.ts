@@ -23,7 +23,17 @@ const STARTABLE_STATUSES = new Set<TaskStatus>(["DRAFT", "SCHEDULED", "BLOCKED"]
 const PROMPT_EDITABLE_STATUSES = new Set<TaskStatus>(["DRAFT", "SCHEDULED", "BLOCKED"]);
 
 const PatchSchema = z.object({
-  action: z.enum(["start", "pause", "resume", "stop", "cancel", "steer", "retry", "update_prompt"]),
+  action: z.enum([
+    "start",
+    "pause",
+    "resume",
+    "stop",
+    "cancel",
+    "steer",
+    "retry",
+    "update_prompt",
+    "merge",
+  ]),
   prompt: z.string().optional(),
 });
 
@@ -57,12 +67,31 @@ export async function PATCH(req: NextRequest, ctx: Params) {
         if (task.status !== "PAUSED" && task.status !== "RATE_LIMITED") {
           throw new ApiError(409, `cannot resume from ${task.status}`);
         }
+        if (task.pauseReason === "BUDGET_EXCEEDED") {
+          // Resuming is the user saying "keep going". The budget has to go, or
+          // the next usage report (seconds away) would pause the task again.
+          await db.task.update({ where: { id }, data: { tokenBudget: null } });
+          await emitEvent(id, "LOG", {
+            level: "info",
+            line: "token budget removed — resumed past it by the user",
+          });
+        }
         await transition(id, await resumeTarget(id), { pauseReason: null });
         break;
       }
       case "stop":
       case "cancel": {
         await transition(id, "CANCELLED", { reason: `${action} requested by user` });
+        break;
+      }
+      case "merge": {
+        // The web app holds no GitHub credentials; the orchestrator merges on
+        // its next pass (it checks for this flag every tick).
+        if (task.status !== "PR_OPEN") {
+          throw new ApiError(409, `cannot merge a task that is ${task.status}`);
+        }
+        await db.task.update({ where: { id }, data: { prMergeRequestedAt: new Date() } });
+        await emitEvent(id, "LOG", { level: "info", line: "merge requested from the task page" });
         break;
       }
       case "steer": {
@@ -124,6 +153,9 @@ async function resumeTarget(taskId: string) {
   });
   if (openQuestion?.kind === "PLAN_APPROVAL") return "AWAITING_PLAN_APPROVAL" as const;
   if (openQuestion) return "NEEDS_INPUT" as const;
+  // The branch is pushed and the runner has nothing left to do; only opening
+  // the PR failed. Going back to TESTING would leave it waiting there forever.
+  if (task.failureCode === "PR_FAILED") return "OPENING_PR" as const;
   if (task.currentStage) return STAGE_TO_STATUS[task.currentStage];
   return "QUEUED" as const;
 }

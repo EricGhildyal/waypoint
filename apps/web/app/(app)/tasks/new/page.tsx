@@ -30,7 +30,13 @@ export default async function NewTaskPage({
     <NewTaskForm
       projects={projects}
       models={models}
-      defaultModel={settings.defaultModel ?? "claude-fable-5"}
+      modelSettings={{
+        defaultPlanningModel: settings.defaultPlanningModel,
+        defaultImplementationModel: settings.defaultImplementationModel,
+        defaultReviewModel: settings.defaultReviewModel,
+        defaultTestingModel: settings.defaultTestingModel,
+      }}
+      autoApproveEasyPlans={settings.autoApproveEasyPlans !== "false"}
       dependencyCandidates={recentTasks}
       initialProjectId={projects.some((p) => p.id === project) ? project : undefined}
     />

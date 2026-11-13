@@ -1,5 +1,5 @@
 import { type NextRequest, NextResponse } from "next/server";
-import { db } from "@waypoint/core";
+import { db, parseTestSuites } from "@waypoint/core";
 import { ApiError, apiError, assertSameOrigin, requireUser } from "@/lib/api";
 import { ProjectBodySchema } from "../route";
 
@@ -17,6 +17,7 @@ export async function GET(_req: NextRequest, ctx: Params) {
     const { secrets, ...fields } = project;
     return NextResponse.json({
       ...fields,
+      testSuites: parseTestSuites(project.testSuites),
       createdAt: project.createdAt.toISOString(),
       updatedAt: project.updatedAt.toISOString(),
       // write-only display: name + "set" indicator, never echo values (§9)
@@ -32,8 +33,27 @@ export async function PATCH(req: NextRequest, ctx: Params) {
     assertSameOrigin(req);
     await requireUser();
     const { id } = await ctx.params;
-    const body = ProjectBodySchema.partial().parse(await req.json());
-    const project = await db.project.update({ where: { id }, data: body });
+    const raw: unknown = await req.json();
+    const parsed = ProjectBodySchema.partial().parse(raw);
+    // .partial() still fills in schema defaults, so a field the caller left
+    // out would be reset to its default. Keep only what was actually sent.
+    const sent = raw && typeof raw === "object" ? raw : {};
+    const body = Object.fromEntries(
+      Object.entries(parsed).filter(([key]) => Object.hasOwn(sent, key)),
+    );
+    if (!(await db.project.findUnique({ where: { id }, select: { id: true } }))) {
+      throw new ApiError(404, "project not found");
+    }
+    const project = await db.project.update({
+      where: { id },
+      data: {
+        ...body,
+        // stored as JSON text
+        ...(parsed.testSuites && Object.hasOwn(sent, "testSuites")
+          ? { testSuites: JSON.stringify(parsed.testSuites) }
+          : {}),
+      },
+    });
     return NextResponse.json({ id: project.id });
   } catch (err) {
     return apiError(err);

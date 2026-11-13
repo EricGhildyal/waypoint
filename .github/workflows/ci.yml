@@ -35,3 +35,8 @@ jobs:
 
       - name: Typecheck
         run: bun run typecheck
+
+      # Unit tests only (pure logic: PR decisions, the state machine, UI
+      # grouping). The Playwright suite under e2e/ needs a running app.
+      - name: Test
+        run: bun run test

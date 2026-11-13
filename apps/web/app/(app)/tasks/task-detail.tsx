@@ -120,7 +120,13 @@ export function TaskDetailView({ initial, focus }: { initial: TaskDetail; focus:
     [task.id, mutate],
   );
 
-  const running = ["PLANNING", "IMPLEMENTING", "REVIEWING", "TESTING"].includes(task.status);
+  const running = [
+    "PLANNING",
+    "IMPLEMENTING",
+    "REVIEWING",
+    "TESTING",
+    "ADDRESSING_FEEDBACK",
+  ].includes(task.status);
   const pausable = running || ["AWAITING_PLAN_APPROVAL", "NEEDS_INPUT"].includes(task.status);
   const active = !["DONE", "CANCELLED", "FAILED"].includes(task.status);
   // "Start now" queues a draft, and force-queues a scheduled/blocked task ahead
@@ -185,13 +191,33 @@ export function TaskDetailView({ initial, focus }: { initial: TaskDetail; focus:
           {task.status === "FAILED" ? (
             <RetryButton task={task} busy={busy} onRetry={action} />
           ) : null}
+          {task.status === "PR_OPEN" ? (
+            <Button
+              small
+              variant="primary"
+              disabled={busy || task.prMergeRequested}
+              onClick={() => {
+                if (
+                  confirm(
+                    "Merge this pull request now? It does not wait for an approval — GitHub still applies the repository's branch protection.",
+                  )
+                )
+                  void action("merge");
+              }}
+            >
+              {task.prMergeRequested ? "Merging…" : "Merge now"}
+            </Button>
+          ) : null}
           {!["DONE", "CANCELLED", "FAILED"].includes(task.status) ? (
             <Button
               small
               variant="danger"
               disabled={busy}
               onClick={() => {
-                if (confirm("Stop and cancel this task?")) void action("stop");
+                const note = task.prUrl
+                  ? " Its pull request will be closed on GitHub (the branch is kept)."
+                  : "";
+                if (confirm(`Stop and cancel this task?${note}`)) void action("stop");
               }}
             >
               Stop
@@ -250,7 +276,29 @@ export function TaskDetailView({ initial, focus }: { initial: TaskDetail; focus:
           className={clsx("min-w-0 flex-1 space-y-3", view === "checklist" && "hidden lg:block")}
         >
           <StageRunList task={task} events={events} focus={focus} />
-          {active ? <SteerForm onSteer={action} /> : null}
+          {task.status === "PR_OPEN" || task.status === "OPENING_PR" ? (
+            // no agent is running to receive a steering message here
+            <p className="text-sm text-zinc-500">
+              {task.prUrl ? (
+                <>
+                  To request changes, comment on{" "}
+                  <a
+                    href={task.prUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="text-indigo-400 hover:underline"
+                  >
+                    the pull request ↗
+                  </a>{" "}
+                  — Waypoint picks comments up within a few minutes and replies there.
+                </>
+              ) : (
+                "Opening the pull request…"
+              )}
+            </p>
+          ) : active ? (
+            <SteerForm onSteer={action} />
+          ) : null}
         </div>
         <aside className={clsx("lg:w-80 lg:shrink-0", view === "activity" && "hidden lg:block")}>
           <ChecklistPanel items={task.checklist ?? []} />
@@ -314,9 +362,10 @@ function RetryButton({
     enableReinitialize: true,
     validationSchema: PromptSchema,
     onSubmit: async (values, helpers) => {
-      await onRetry("retry", values.prompt.trim());
+      const ok = await onRetry("retry", values.prompt.trim());
       helpers.setSubmitting(false);
-      setOpen(false);
+      // on a failure keep the dialog (and any edits to the prompt) open
+      if (ok) setOpen(false);
     },
   });
 
@@ -465,8 +514,9 @@ function SteerForm({ onSteer }: { onSteer: (name: string, prompt?: string) => Pr
     initialValues: { text: "" },
     validationSchema: SteerSchema,
     onSubmit: async (values, helpers) => {
-      await onSteer("steer", values.text.trim());
-      helpers.resetForm();
+      const ok = await onSteer("steer", values.text.trim());
+      // keep the typed message when the request failed
+      if (ok) helpers.resetForm();
       helpers.setSubmitting(false);
     },
   });

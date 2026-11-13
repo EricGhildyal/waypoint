@@ -5,7 +5,7 @@
  * packages/core/src/schemas.ts.
  */
 
-export type StageName = "PLANNING" | "IMPLEMENTATION" | "REVIEW" | "TESTING";
+export type StageName = "PLANNING" | "IMPLEMENTATION" | "REVIEW" | "TESTING" | "PR_FEEDBACK";
 export type StageRunStatus = "RUNNING" | "SUCCEEDED" | "FAILED" | "INTERRUPTED";
 
 export interface ChecklistItem {
@@ -106,15 +106,43 @@ export interface SyncRequest {
 
 export type InboxItem =
   | { id: string; type: "steering"; text: string }
-  | { id: string; type: "answer"; questionId: string; answer: string };
+  | {
+      id: string;
+      type: "answer";
+      questionId: string;
+      answer: string;
+      /** sha256 of "{kind}\n{text}" of the question answered — see questionKey(). */
+      key?: string;
+    };
 
 export interface SyncResponse {
   inbox: InboxItem[];
   control: "run" | "pause" | "stop";
+  /**
+   * Present (possibly empty) while the task is ADDRESSING_FEEDBACK: the user's
+   * pull-request comments for the agent to address. Empty means there is
+   * nothing to address and the branch only needs syncing with the default
+   * branch. Re-sent on every sync, so it survives a container restart.
+   */
+  prFeedback?: string;
 }
 
 export type CoverageFormat =
   "COBERTURA_XML" | "LCOV" | "CLOVER_XML" | "JACOCO_XML" | "GO_COVERPROFILE";
+
+/** One independently run and gated test suite (mirrors core's TestSuiteSchema). */
+export interface TestSuite {
+  name: string;
+  command: string;
+  /** Folder under the repository root the command and coverage check run in; "" = root. */
+  workdir: string;
+  /** False: the command must pass, changed-line coverage isn't checked. */
+  coverageEnabled: boolean;
+  coverageFormat: CoverageFormat;
+  /** Relative to workdir. */
+  coverageReportPath: string;
+  coverageBar: number;
+}
 
 export interface TaskMeta {
   taskId: string;
@@ -125,6 +153,8 @@ export interface TaskMeta {
   verify: boolean;
   /** Skip the browser-testing agent; the test suite / coverage gate still runs. */
   skipTesting: boolean;
+  /** Go from plan straight to implementation without asking (easy tasks). */
+  autoApprovePlan?: boolean;
   models: { planning: string; implementation: string; review: string; testing: string };
   project: {
     name: string;
@@ -134,13 +164,11 @@ export interface TaskMeta {
     runCommand: string;
     runReadyUrl: string | null;
     migrateCommand: string | null;
-    testCommand: string | null;
-    coverageFormat: CoverageFormat;
-    coverageReportPath: string;
+    /** Empty: no test or coverage gate. */
+    testSuites: TestSuite[];
     lintCommand: string | null;
     formatCommand: string | null;
     instructions: string;
-    coverageBar: number;
   };
 }
 
@@ -172,4 +200,15 @@ export function parseFindingSelection(answer: string, count: number): number[] {
     if (n >= 1 && n <= count) picked.add(n);
   }
   return [...picked].toSorted((a, b) => a - b);
+}
+
+/**
+ * Whether a PLAN_APPROVAL answer approves the plan. "Approved, but also add X"
+ * is not an approval — it carries instructions, and treating it as one would
+ * drop them — so only a short reply that starts with "approve" and has no
+ * "but" counts. Anything else is revision notes. Must match packages/core constants verbatim.
+ */
+export function isPlanApproval(answer: string): boolean {
+  const text = answer.trim();
+  return /^approved?\b/i.test(text) && !/\bbut\b/i.test(text) && text.split(/\s+/).length <= 6;
 }

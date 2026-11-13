@@ -15,7 +15,8 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
     const project = await db.project.findUnique({ where: { id } });
     if (!project) throw new ApiError(404, "project not found");
 
-    const model = await getSetting("defaultModel");
+    // a verify run never calls a model — the columns just need a value
+    const model = await getSetting("defaultImplementationModel");
     const task = await db.task.create({
       data: {
         projectId: id,

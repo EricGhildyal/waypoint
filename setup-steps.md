@@ -157,12 +157,43 @@ it before the first deploy.
 Create a PAT that can clone, push branches, and open PRs on your client repos:
 
 - Fine-grained: Repository access → the repos Waypoint will work on;
-  permissions: **Contents: Read and write**, **Pull requests: Read and write**.
+  permissions: **Contents: Read and write**, **Pull requests: Read and write**,
+  and **Checks: Read** plus **Actions: Read** so Waypoint can see failing CI
+  checks and hand their logs to an agent.
 - (Or a classic PAT with `repo` scope.)
 
 → `GITHUB_DEFAULT_PAT` (seeded into the encrypted global `GIT_PAT` Secret on
 first boot; rotate later from Settings). Per-project override: add a `GIT_PAT`
 secret on the project.
+
+### 8a. GitHub bot account (so you can approve Waypoint's PRs)
+
+GitHub does not let you approve a pull request you opened yourself, and a PR
+opened with your PAT is yours. To use the Approve button — which is what tells
+Waypoint to merge — give Waypoint a second identity:
+
+1. Create a separate GitHub account for the bot (a "machine user").
+2. Invite it to each repo Waypoint works on with **Write** access.
+3. As the bot, create a token. For a repo under your **personal** account use a
+   classic PAT with the `repo` scope: fine-grained tokens only reach repos the
+   token's owner owns (or an organization's repos), not ones it is merely a
+   collaborator on. For an **organization** repo, add the bot to the org and a
+   fine-grained token with the permissions above works.
+4. Put it in `WAYPOINT_BOT_PAT` before first boot (seeded into the encrypted
+   global `GIT_BOT_PAT` Secret), or paste it into **Settings → Credentials →
+   GitHub bot token** at any time (per-project override: a `GIT_BOT_PAT` secret
+   on the project).
+
+With a bot token set, Waypoint clones, pushes, opens PRs, replies and merges as
+the bot. Your own PAT stays out of the agent containers and is only used to
+look up your login, so Waypoint knows whose comments and approvals to act on
+(override that list under **Settings → Trusted GitHub logins**).
+
+Once a PR is open: comment on it to request changes (Waypoint addresses them,
+pushes, and replies), approve it to have Waypoint merge it once checks are
+green. An approval covers the commit it was given on, so re-approve after a
+feedback round. Closing the PR on GitHub cancels the task, and cancelling the
+task in Waypoint closes the PR (the branch is kept either way).
 
 ---
 
@@ -237,8 +268,15 @@ stored secret (they'd need re-entering).
 
 In the UI → Projects → New Project:
 
-1. Fill in the https clone URL, setup/run/test commands, coverage format +
-   report path, and the ready URL for the testing stage.
+1. Fill in the https clone URL, then press **Detect commands**: Waypoint reads
+   the Makefile, compose file and `package.json` at the root of the repo
+   (github.com only, using the stored bot and personal GitHub tokens) and fills in
+   the blank setup/run/migrate/lint/format commands and the ready URL. Check
+   them. **Test suites** are optional: add one per part of the app (say
+   `backend` and `frontend`), each with its own command, folder, and coverage
+   rules. Every suite must pass; one with **Require test coverage** on must
+   also write a coverage report (set its format + report path, relative to the
+   suite's folder) and meet its own bar on the lines a task changed.
 2. Add project secrets (env vars the app under test needs). They're injected
    into that project's task containers only.
 3. If the repo needs a PAT different from the global one, add a `GIT_PAT`
@@ -247,9 +285,25 @@ In the UI → Projects → New Project:
    streams the log. Iterate until green; then the project is trustworthy.
 5. (Optional, custom runner image) If the project sets a Dockerfile path, build
    the image manually on the VPS — it must be `FROM waypoint-runner:latest`:
+
    ```bash
    docker build -t waypoint-project-<projectId> -f <path/to/Dockerfile> <repo>
    ```
+
+6. (Apps that run as a compose stack) Tick **Docker inside tasks**. Each of the
+   project's tasks then starts its own Docker daemon inside its container, so
+   the setup, run and test commands can use `docker compose` — database,
+   backend and frontend together. The stack's published ports are on the
+   task's `localhost` (so a frontend on port 80 has the ready URL
+   `http://localhost`), and everything it runs counts against the task's
+   memory and CPU limits from Settings, which may need raising. Any `env_file` a root compose file names that isn't in the clone (they're usually gitignored) is written for you with the project's secrets, so add the variables the stack needs as project secrets.
+
+   **Security:** these task containers run `--privileged`, and a privileged
+   container can take over the host. Only switch it on for repositories you
+   trust. To nest Docker without that, install
+   [Sysbox](https://github.com/nestybox/sysbox) on the VPS and set
+   `RUNNER_DOCKER_RUNTIME=sysbox-runc` in `deploy/.env`. Projects that leave
+   the box unticked are unaffected.
 
 ### Waypoint working on itself (optional)
 
@@ -285,8 +339,10 @@ sign-in (dev-only code path), `DATABASE_URL` points at
 `.local/tasks`, bind-mounted into task containers so web, the orchestrator and
 the runners all see the same files.
 
-Tasks additionally need the runner image — `make runner-image` (slow: Playwright
-base). `make doctor` reports what's missing.
+Tasks additionally need the runner image. `make setup` (and so `make run`)
+builds it when it's missing — slow the first time: Playwright base. After
+changing the runner, rebuild it with `make runner-image`. `make doctor` reports
+what's missing.
 
 ---
 

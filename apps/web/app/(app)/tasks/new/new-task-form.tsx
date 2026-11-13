@@ -16,6 +16,7 @@ import {
   Textarea,
 } from "@/components/catalyst";
 import { ErrorText, fieldError } from "@/components/form-utils";
+import { defaultModelsFor } from "@/lib/default-models";
 import { apiFetch, STATUS_LABELS } from "@/lib/format";
 
 const DIFFICULTIES = ["EASY", "MEDIUM", "HARD"] as const;
@@ -71,22 +72,30 @@ const NewTaskSchema = Yup.object({
     .notRequired(),
 });
 
+const MODEL_STAGES = ["planning", "implementation", "review", "testing"] as const;
+
 export function NewTaskForm({
   projects,
   models,
-  defaultModel,
+  modelSettings,
+  autoApproveEasyPlans,
   dependencyCandidates,
   initialProjectId,
 }: {
   projects: Array<{ id: string; name: string }>;
   models: string[];
-  defaultModel: string;
+  /** The per-stage default-model settings; the defaults also depend on difficulty. */
+  modelSettings: Record<string, string | undefined>;
+  autoApproveEasyPlans: boolean;
   dependencyCandidates: Array<{ id: string; title: string; status: string }>;
   initialProjectId?: string;
 }) {
   const router = useRouter();
   const [showModels, setShowModels] = useState(false);
-  const modelOptions = models.length ? models : [defaultModel];
+  // a default that is not in the fetched list must still be selectable
+  const modelOptions = [
+    ...new Set([...models, ...Object.values(defaultModelsFor("MEDIUM", modelSettings))]),
+  ].filter(Boolean);
 
   const formik = useFormik<NewTaskValues>({
     initialValues: {
@@ -94,12 +103,7 @@ export function NewTaskForm({
       title: "",
       prompt: "",
       difficulty: "MEDIUM",
-      models: {
-        planning: defaultModel,
-        implementation: defaultModel,
-        review: defaultModel,
-        testing: defaultModel,
-      },
+      models: defaultModelsFor("MEDIUM", modelSettings),
       skipTesting: false,
       schedule: "now",
       scheduledAt: "",
@@ -172,13 +176,24 @@ export function NewTaskForm({
           </Field>
           <Field
             label="Difficulty"
-            hint="Affects planning depth only — every plan still needs your approval."
+            hint={`Easy: a short plan${autoApproveEasyPlans ? " that starts without your approval" : ""}, cheaper models, less thinking. Hard: a deeper plan and more thinking. Medium and hard plans always wait for your approval.`}
+            group
           >
             <ButtonGroup
               full
               options={DIFFICULTY_OPTIONS}
               value={formik.values.difficulty}
-              onChange={(d) => formik.setFieldValue("difficulty", d)}
+              onChange={(d) => {
+                // Follow the new difficulty's default models, unless the user
+                // already picked models of their own.
+                const before = defaultModelsFor(formik.values.difficulty, modelSettings);
+                const untouched = MODEL_STAGES.every(
+                  (stage) => formik.values.models[stage] === before[stage],
+                );
+                void formik.setFieldValue("difficulty", d);
+                if (untouched)
+                  void formik.setFieldValue("models", defaultModelsFor(d, modelSettings));
+              }}
             />
           </Field>
 
@@ -231,7 +246,7 @@ export function NewTaskForm({
               <Select {...formik.getFieldProps("schedule")}>
                 <option value="now">Run now</option>
                 <option value="later">At a specific time</option>
-                <option value="after">After another task</option>
+                <option value="after">After another task&rsquo;s PR is merged</option>
                 <option value="draft">Don&rsquo;t start yet — start manually</option>
               </Select>
               {formik.values.schedule === "draft" ? (

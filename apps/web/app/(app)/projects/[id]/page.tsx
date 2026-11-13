@@ -1,5 +1,5 @@
 import { notFound } from "next/navigation";
-import { db } from "@waypoint/core";
+import { db, parseTestSuites } from "@waypoint/core";
 import type { ProjectFormData } from "../project-form";
 import { getTaskList } from "@/lib/task-list";
 import { ProjectDetail } from "./project-detail";
@@ -27,14 +27,12 @@ export default async function ProjectPage({ params }: { params: Promise<{ id: st
     runCommand: project.runCommand,
     runReadyUrl: project.runReadyUrl,
     migrateCommand: project.migrateCommand,
-    testCommand: project.testCommand,
-    coverageFormat: project.coverageFormat,
-    coverageReportPath: project.coverageReportPath,
+    testSuites: parseTestSuites(project.testSuites),
     lintCommand: project.lintCommand,
     formatCommand: project.formatCommand,
     dockerfilePath: project.dockerfilePath,
+    dockerEnabled: project.dockerEnabled,
     instructions: project.instructions,
-    coverageBar: project.coverageBar,
     secrets: project.secrets.map((s) => s.key),
   };
 

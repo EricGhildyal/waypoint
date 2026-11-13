@@ -47,5 +47,10 @@ waypoint.ergh.co {
 		}
 	}
 
+	# The runner sync API is only ever called from task containers, over the
+	# internal network (RUNNER_HOST_API=http://web:3000). Nothing outside needs it.
+	@runner path /api/runner/*
+	respond @runner 404
+
 	reverse_proxy web:3000
 }

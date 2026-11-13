@@ -1,7 +1,8 @@
 "use client";
 
-import type { ReactNode } from "react";
+import { Fragment, type ReactNode } from "react";
 import {
+  Badge,
   Card,
   CheckIcon,
   CircleOutlineIcon,
@@ -13,15 +14,54 @@ import {
 } from "@/components/catalyst";
 import { Markdown } from "@/components/markdown";
 import { STAGE_LABELS, formatDuration, formatTokens } from "@/lib/format";
-import type { QuestionView, StageRunView, TaskDetail } from "@/lib/task-detail";
+import type { PrStatusView, QuestionView, StageRunView, TaskDetail } from "@/lib/task-detail";
 import { EventLine } from "./event-line";
 import { FindingsApproval } from "./findings-approval";
 import { FindingsCard } from "./findings-card";
 import { FocusAnchor } from "./focus-anchor";
 import { PlanReply, PlanSection } from "./plan-section";
 import { QuestionCard } from "./question-card";
-import type { FeedEvent, RowItem, Section } from "./stage-run-groups";
+import { isRetry, type FeedEvent, type RowItem, type Section } from "./stage-run-groups";
 import { TokenMixBar } from "./token-mix-bar";
+
+const CHECKS_BADGE = {
+  passing: { color: "green", label: "Checks passing" },
+  failing: { color: "red", label: "Checks failing" },
+  pending: { color: "amber", label: "Checks running" },
+  none: { color: "zinc", label: "No checks" },
+} as const;
+
+/** What the orchestrator last saw on GitHub: checks, approval, and why nothing is moving. */
+function PrStatusLine({ status }: { status: PrStatusView }) {
+  const checks = CHECKS_BADGE[status.checks];
+  return (
+    <div className="flex flex-wrap items-center gap-2 text-sm">
+      <Badge color={checks.color}>{checks.label}</Badge>
+      <Badge color={status.approved ? "green" : "zinc"}>
+        {status.approved ? "Approved" : "Not approved yet"}
+      </Badge>
+      {status.note ? <span className="text-zinc-400">{status.note}</span> : null}
+    </div>
+  );
+}
+
+/** Where the pull request stands, for the PR row's header. */
+function prStateText(task: TaskDetail): string {
+  if (!task.prUrl) return "opening…";
+  switch (task.status) {
+    case "PR_OPEN":
+      return "awaiting your review on GitHub — comment to request changes, approve (or merge) when ready";
+    case "ADDRESSING_FEEDBACK":
+      return "addressing your feedback";
+    case "DONE":
+      return "merged";
+    case "CANCELLED":
+      // the orchestrator closes the PR of a cancelled task within about a minute
+      return "closed";
+    default:
+      return "";
+  }
+}
 
 /**
  * One GitHub-Actions-style section of the task page: a stage run, the Setup
@@ -105,12 +145,15 @@ export function SectionRow({
                 )
               }
               label="Open PR"
-              meta={opened ? null : <span className="text-xs text-zinc-500">opening…</span>}
+              meta={<span className="text-xs text-zinc-500">{prStateText(task)}</span>}
             />
           }
           bodyClassName="space-y-3 p-4"
         >
           <ItemFeed taskId={task.id} items={section.items} focus={focus} />
+          {task.status === "PR_OPEN" && task.prStatus ? (
+            <PrStatusLine status={task.prStatus} />
+          ) : null}
           {task.prUrl ? (
             <p className="text-sm">
               <a
@@ -278,7 +321,8 @@ function StatusIcon({ status }: { status: string }) {
 }
 
 type Chunk =
-  | { kind: "events"; key: string; events: FeedEvent[] }
+  // `retryAt` marks a block that opens with the user's Retry click
+  | { kind: "events"; key: string; events: FeedEvent[]; retryAt?: string }
   | { kind: "question"; question: QuestionView };
 
 /**
@@ -310,7 +354,15 @@ function ItemFeed({
   for (const item of visible) {
     if (item.kind === "event") {
       const last = chunks[chunks.length - 1];
-      if (last?.kind === "events") last.events.push(item.event);
+      // a retry starts a fresh block, so each attempt reads as its own unit
+      if (isRetry(item.event)) {
+        chunks.push({
+          kind: "events",
+          key: item.event.id,
+          events: [item.event],
+          retryAt: item.event.createdAt,
+        });
+      } else if (last?.kind === "events") last.events.push(item.event);
       else chunks.push({ kind: "events", key: item.event.id, events: [item.event] });
     } else {
       chunks.push({ kind: "question", question: item.question });
@@ -320,11 +372,14 @@ function ItemFeed({
     <div className="space-y-3">
       {chunks.map((chunk) =>
         chunk.kind === "events" ? (
-          <div key={chunk.key} className="space-y-1 rounded-lg bg-zinc-950 p-3 font-mono text-xs">
-            {chunk.events.map((e) => (
-              <EventLine key={e.id} event={e} />
-            ))}
-          </div>
+          <Fragment key={chunk.key}>
+            {chunk.retryAt && <RetryDivider at={chunk.retryAt} />}
+            <div className="space-y-1 rounded-lg bg-zinc-950 p-3 font-mono text-xs">
+              {chunk.events.map((e) => (
+                <EventLine key={e.id} event={e} />
+              ))}
+            </div>
+          </Fragment>
         ) : // the review gate answers through its own checkbox list (§7), not the
         // free-text form every other question kind uses. Fallback only: normally
         // this renders inside the round's FindingsCard, but a missing or
@@ -348,6 +403,26 @@ function ItemFeed({
           />
         ),
       )}
+    </div>
+  );
+}
+
+/** The labelled rule between a failed attempt and the events after its retry. */
+function RetryDivider({ at }: { at: string }) {
+  return (
+    <div className="flex items-center gap-3 pt-2 text-xs font-medium text-indigo-300">
+      <span className="h-px flex-1 bg-indigo-400/30" />
+      <span>
+        ↻ You clicked Retry ·{" "}
+        {new Date(at).toLocaleString(undefined, {
+          month: "short",
+          day: "numeric",
+          hour: "2-digit",
+          minute: "2-digit",
+          hour12: false,
+        })}
+      </span>
+      <span className="h-px flex-1 bg-indigo-400/30" />
     </div>
   );
 }

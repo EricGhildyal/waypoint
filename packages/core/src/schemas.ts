@@ -153,7 +153,7 @@ export type UsageWindow = z.infer<typeof UsageWindowSchema>;
 // Runner sync protocol (§6) — the runner's ONLY channel to the host.
 // ---------------------------------------------------------------------------
 
-const StageNameSchema = z.enum(["PLANNING", "IMPLEMENTATION", "REVIEW", "TESTING"]);
+const StageNameSchema = z.enum(["PLANNING", "IMPLEMENTATION", "REVIEW", "TESTING", "PR_FEEDBACK"]);
 const StageRunStatusSchema = z.enum(["RUNNING", "SUCCEEDED", "FAILED", "INTERRUPTED"]);
 
 export const SyncRequestSchema = z.object({
@@ -223,16 +223,83 @@ export type SyncRequest = z.infer<typeof SyncRequestSchema>;
 
 export type InboxItem =
   | { id: string; type: "steering"; text: string }
-  | { id: string; type: "answer"; questionId: string; answer: string };
+  | {
+      id: string;
+      type: "answer";
+      questionId: string;
+      answer: string;
+      /**
+       * sha256 of "{kind}\n{text}" of the question answered. The runner does not
+       * know question ids, so this is how it tells its own answer from one to a
+       * question asked before a restart.
+       */
+      key?: string;
+    };
 
 export interface SyncResponse {
   inbox: InboxItem[];
   control: "run" | "pause" | "stop";
+  /**
+   * Present (possibly empty) while the task is ADDRESSING_FEEDBACK: the user's
+   * pull-request comments for the agent to address. Empty means the branch only
+   * needs syncing with the default branch.
+   */
+  prFeedback?: string;
 }
 
 // ---------------------------------------------------------------------------
 // Runner container config — serialized into the TASK_META env var.
 // ---------------------------------------------------------------------------
+
+export const COVERAGE_FORMATS = [
+  "LCOV",
+  "COBERTURA_XML",
+  "CLOVER_XML",
+  "JACOCO_XML",
+  "GO_COVERPROFILE",
+] as const;
+
+/**
+ * One independently run and gated test suite of a project (Project.testSuites
+ * holds a JSON array of these) — e.g. "backend" and "frontend", each with its
+ * own command, folder and coverage rules.
+ */
+export const TestSuiteSchema = z.object({
+  name: z.string().trim().min(1).max(40),
+  command: z.string().trim().min(1),
+  // Folder, relative to the repository root, the command and the coverage
+  // check run in; the report path is relative to it. "" = the root.
+  workdir: z
+    .string()
+    .trim()
+    .default("")
+    .refine((v) => !v.startsWith("/") && !v.split("/").includes(".."), {
+      message: "must be a folder inside the repository",
+    }),
+  // false = the command must pass, changed-line coverage isn't checked
+  coverageEnabled: z.boolean().default(true),
+  coverageFormat: z.enum(COVERAGE_FORMATS).default("LCOV"),
+  coverageReportPath: z.string().trim().min(1).default("coverage/lcov.info"),
+  coverageBar: z.number().int().min(0).max(100).default(100), // % of changed lines
+});
+export type TestSuite = z.infer<typeof TestSuiteSchema>;
+
+export const TestSuitesSchema = z
+  .array(TestSuiteSchema)
+  .max(10)
+  .refine((suites) => new Set(suites.map((s) => s.name.toLowerCase())).size === suites.length, {
+    message: "test suite names must be unique",
+  });
+
+/** Project.testSuites (a JSON string) → suites; anything unreadable is no suites. */
+export function parseTestSuites(json: string): TestSuite[] {
+  try {
+    const parsed = TestSuitesSchema.safeParse(JSON.parse(json));
+    return parsed.success ? parsed.data : [];
+  } catch {
+    return [];
+  }
+}
 
 export const TaskMetaSchema = z.object({
   taskId: z.string(),
@@ -244,6 +311,8 @@ export const TaskMetaSchema = z.object({
   // Skip the browser-testing agent in the Testing stage; the project's test
   // suite / coverage gate still runs. Default keeps pre-existing metas valid.
   skipTesting: z.boolean().default(false),
+  /** Go from plan straight to implementation (easy tasks, when the setting allows). */
+  autoApprovePlan: z.boolean().default(false),
   models: z.object({
     planning: z.string(),
     implementation: z.string(),
@@ -258,19 +327,11 @@ export const TaskMetaSchema = z.object({
     runCommand: z.string(),
     runReadyUrl: z.string().nullable(),
     migrateCommand: z.string().nullable(),
-    testCommand: z.string().nullable(),
-    coverageFormat: z.enum([
-      "COBERTURA_XML",
-      "LCOV",
-      "CLOVER_XML",
-      "JACOCO_XML",
-      "GO_COVERPROFILE",
-    ]),
-    coverageReportPath: z.string(),
+    // Default keeps pre-existing metas valid.
+    testSuites: z.array(TestSuiteSchema).default([]),
     lintCommand: z.string().nullable(),
     formatCommand: z.string().nullable(),
     instructions: z.string(),
-    coverageBar: z.number().int(),
   }),
 });
 export type TaskMeta = z.infer<typeof TaskMetaSchema>;

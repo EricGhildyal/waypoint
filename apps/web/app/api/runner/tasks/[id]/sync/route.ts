@@ -6,10 +6,12 @@ import {
   CYCLE_CAP_OPTION_CONTINUE,
   EVENT_PAYLOAD_SCHEMAS,
   FindingsSchema,
+  PR_FEEDBACK_ARTIFACT,
   RUNNING_STAGE_STATUSES,
   STAGE_TO_STATUS,
   SyncRequestSchema,
   TERMINAL_STATUSES,
+  TransitionError,
   VERIFY_PROMPT_SENTINEL,
   artifactDir,
   artifactPath,
@@ -97,7 +99,7 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
     await emitEvent(id, "CHECKLIST_UPDATE", { items: body.checklist });
   }
 
-  if (body.question) await handleQuestion(task, body.question);
+  if (body.question) await handleQuestion(task, body.question, body.cursor);
 
   if (body.stage?.action === "end") await handleStageEnd(task, body.stage, isVerify);
 
@@ -112,6 +114,16 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
   // latest utilization per Claude limit window — display only (settings bars)
   if (body.usageWindows?.length) await recordUsageWindows(body.usageWindows);
 
+  // One runner's report pauses every task and holds the queue, so it has to be
+  // a real, near-term time: the Claude windows are at most a week long.
+  const resetsAtMs = body.rateLimit ? Date.parse(body.rateLimit.resetsAt) : Number.NaN;
+  if (body.rateLimit && !Number.isNaN(resetsAtMs)) {
+    body.rateLimit.resetsAt = new Date(
+      Math.min(resetsAtMs, Date.now() + 7 * 24 * 60 * 60 * 1000),
+    ).toISOString();
+  } else {
+    body.rateLimit = undefined;
+  }
   if (body.rateLimit) {
     // every task shares the one Claude Max OAuth token (§5) — when one runner
     // hits the window, rate-limit ALL actively running tasks together; the
@@ -131,7 +143,22 @@ export async function POST(req: NextRequest, ctx: { params: Promise<{ id: string
 
   const inbox = await buildInbox(id, body.cursor);
   const fresh = await db.task.findUniqueOrThrow({ where: { id } });
-  return NextResponse.json({ inbox, control: controlFor(fresh.status) } satisfies SyncResponse);
+  return NextResponse.json({
+    inbox,
+    control: controlFor(fresh.status),
+    // Re-sent on every sync for as long as the round lasts, so a container
+    // restarted mid-round gets it again without any delivery bookkeeping.
+    ...(fresh.status === "ADDRESSING_FEEDBACK" ? { prFeedback: await readPrFeedback(id) } : {}),
+  } satisfies SyncResponse);
+}
+
+/** What the orchestrator's PR poll wrote for this round; "" = just re-sync the branch. */
+async function readPrFeedback(taskId: string): Promise<string> {
+  try {
+    return await fs.readFile(artifactPath(taskId, PR_FEEDBACK_ARTIFACT), "utf8");
+  } catch {
+    return "";
+  }
 }
 
 function controlFor(status: string): SyncResponse["control"] {
@@ -140,12 +167,18 @@ function controlFor(status: string): SyncResponse["control"] {
     status === "CANCELLED" ||
     status === "DONE" ||
     status === "FAILED" ||
-    status === "OPENING_PR"
+    status === "OPENING_PR" ||
+    // the PR is open and waiting on the human — the container exits and is
+    // started again if they leave feedback
+    status === "PR_OPEN"
   ) {
     return "stop";
   }
   return "run";
 }
+
+/** Statuses in which the pipeline's own stage runs are over. */
+const PR_PHASE = new Set<Task["status"]>(["OPENING_PR", "PR_OPEN"]);
 
 type TaskWithProject = Task & { project: { name: string } };
 type StageMsg = NonNullable<SyncRequest["stage"]>;
@@ -167,7 +200,7 @@ async function handleStageStart(
       where: { id: existing.id },
       data: {
         sessionId: stage.sessionId ?? existing.sessionId,
-        ...(TERMINAL_STATUSES.includes(task.status)
+        ...(TERMINAL_STATUSES.includes(task.status) || PR_PHASE.has(task.status)
           ? {}
           : { status: "RUNNING" as const, endedAt: null }),
       },
@@ -201,7 +234,14 @@ async function handleStageStart(
 
   const target = STAGE_TO_STATUS[stage.stage as Stage];
   const fresh = await db.task.findUniqueOrThrow({ where: { id: task.id } });
-  if (fresh.status !== target && ALLOWED_TRANSITIONS[fresh.status].includes(target)) {
+  // A stage start advances the status only from a status the runner is meant
+  // to be working in. From PAUSED, RATE_LIMITED, NEEDS_INPUT or FAILED the map
+  // would allow it too (those rows exist for resume and retry), and a start
+  // that raced the pause would then quietly un-pause the task; from PR_OPEN it
+  // would start a feedback round nobody asked for.
+  const mayAdvance =
+    RUNNING_STAGE_STATUSES.includes(fresh.status) || fresh.status === "AWAITING_PLAN_APPROVAL";
+  if (mayAdvance && fresh.status !== target && ALLOWED_TRANSITIONS[fresh.status].includes(target)) {
     await transition(task.id, target, { currentStage: stage.stage as Stage });
   } else if (fresh.currentStage !== stage.stage) {
     await db.task.update({ where: { id: task.id }, data: { currentStage: stage.stage as Stage } });
@@ -216,6 +256,9 @@ async function handleStageEnd(
   const key = { taskId: task.id, stage: stage.stage, attempt: stage.attempt };
   const run = await db.stageRun.findUnique({ where: { taskId_stage_attempt: key } });
   if (!run) return;
+  // The runner re-sends a stage end until it gets a 2xx, so the same end can
+  // arrive twice. The transitions below are idempotent; the counters are not.
+  const replay = run.status === stage.status && run.endedAt !== null;
 
   await db.stageRun.update({
     where: { id: run.id },
@@ -236,7 +279,10 @@ async function handleStageEnd(
   if (stage.artifacts?.length) {
     await fs.mkdir(artifactDir(task.id), { recursive: true });
     for (const artifact of stage.artifacts) {
-      await fs.writeFile(artifactPath(task.id, artifact.name), artifact.content, "utf8");
+      const target = artifactPath(task.id, artifact.name);
+      // "." / ".." / "" resolve to a directory — skip rather than fail the sync
+      if (target === artifactDir(task.id) || !target.startsWith(artifactDir(task.id))) continue;
+      await fs.writeFile(target, artifact.content, "utf8");
     }
   }
 
@@ -253,6 +299,12 @@ async function handleStageEnd(
   }
 
   if (stage.status !== "SUCCEEDED") return;
+
+  if (stage.stage === "PR_FEEDBACK") {
+    // the runner has pushed; back to waiting on the human
+    await safeTransition(task.id, "PR_OPEN", { reason: "feedback addressed" });
+    return;
+  }
 
   if (stage.stage === "REVIEW" || stage.stage === "TESTING") {
     const isReview = stage.stage === "REVIEW";
@@ -282,10 +334,12 @@ async function handleStageEnd(
     );
 
     if (verdict === "request_changes") {
-      await db.task.update({
-        where: { id: task.id },
-        data: isReview ? { reviewCycles: { increment: 1 } } : { testingCycles: { increment: 1 } },
-      });
+      if (!replay) {
+        await db.task.update({
+          where: { id: task.id },
+          data: isReview ? { reviewCycles: { increment: 1 } } : { testingCycles: { increment: 1 } },
+        });
+      }
       if (needsApproval) {
         // stay in REVIEWING — the FINDINGS_APPROVAL question lands next sync and
         // flips this to NEEDS_INPUT; applyAnswer picks the stage to go to
@@ -347,14 +401,22 @@ async function handleUsage(task: TaskWithProject, usage: NonNullable<SyncRequest
 async function handleQuestion(
   task: TaskWithProject,
   question: NonNullable<SyncRequest["question"]>,
+  cursor: string | null,
 ) {
   // A container stopped while a question waits (§5 idle stop) resumes into the
   // same gate and re-sends the identical question — that is a re-send, not a
-  // new question, and its answer is already on its way back via the inbox.
-  const identical = await db.question.findFirst({
+  // new question — but only while the first one is still open, or answered
+  // with the answer not yet delivered. An identical question whose answer the
+  // runner already consumed is a genuinely new ask (the same gate reached
+  // again): swallowing it would leave the runner waiting forever.
+  const identical = await db.question.findMany({
     where: { taskId: task.id, kind: question.kind, text: question.text },
   });
-  if (identical) return;
+  if (identical.some((q) => q.status === "OPEN")) return;
+  if (identical.some((q) => q.status === "ANSWERED")) {
+    const undelivered = new Set((await buildInbox(task.id, cursor)).map((item) => item.id));
+    if (identical.some((q) => undelivered.has(q.id))) return;
+  }
 
   const open = await db.question.findFirst({ where: { taskId: task.id, status: "OPEN" } });
   if (open) return; // ≤1 open question at a time
@@ -412,6 +474,7 @@ async function buildInbox(taskId: string, cursor: string | null): Promise<InboxI
         type: "answer",
         questionId: q.id,
         answer: q.answer ?? "",
+        key: createHash("sha256").update(`${q.kind}\n${q.text}`).digest("hex"),
       } as InboxItem,
     })),
   ].toSorted((a, b) =>
@@ -440,7 +503,7 @@ async function buildInbox(taskId: string, cursor: string | null): Promise<InboxI
 
 /** The runner references stage runs as "{STAGE}:{attempt}" (ids are server-side). */
 async function resolveStageRunId(taskId: string, ref: string): Promise<string | undefined> {
-  const match = /^(PLANNING|IMPLEMENTATION|REVIEW|TESTING):(\d+)$/.exec(ref);
+  const match = /^(PLANNING|IMPLEMENTATION|REVIEW|TESTING|PR_FEEDBACK):(\d+)$/.exec(ref);
   if (!match) {
     const run = await db.stageRun.findUnique({ where: { id: ref } });
     return run?.taskId === taskId ? run.id : undefined;
@@ -465,8 +528,12 @@ async function safeTransition(
 ) {
   try {
     await transition(taskId, to, meta);
-  } catch {
-    /* stale/racing sync — keep the current status */
+  } catch (err) {
+    // A move the state machine disallows is a stale or racing sync: keep the
+    // current status. Anything else (the database was busy) must fail the
+    // request — the runner re-sends on a non-2xx, whereas swallowing it here
+    // would drop a stage end for good and leave the task in a running status.
+    if (!(err instanceof TransitionError)) throw err;
   }
 }
 

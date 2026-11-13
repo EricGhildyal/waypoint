@@ -1,12 +1,13 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import { writeComposeEnvFiles } from "./compose-env";
 import type { RunnerConfig } from "./config";
 import { run, tail } from "./proc";
 import type { Syncer } from "./sync";
 
 export class InfraFailure extends Error {
   constructor(
-    public readonly code: "GIT_CLONE" | "SETUP_COMMAND" | "PUSH_FAILED",
+    public readonly code: "GIT_CLONE" | "SETUP_COMMAND" | "PUSH_FAILED" | "DOCKER_START",
     message: string,
     public readonly logTail: string,
   ) {
@@ -40,6 +41,7 @@ export async function prepareWorkspace(config: RunnerConfig, sync: Syncer): Prom
 
   if (await exists(marker)) {
     sync.log("info", "workspace already prepared — resuming");
+    await writeComposeEnvFiles(config, sync); // secrets may have been rotated
     return;
   }
 
@@ -64,6 +66,9 @@ export async function prepareWorkspace(config: RunnerConfig, sync: Syncer): Prom
       tail(clone.output),
     );
   }
+
+  // before setup: the setup command may already bring the stack up
+  await writeComposeEnvFiles(config, sync);
 
   sync.log("info", `running setup: ${project.setupCommand}`);
   const setup = await run(project.setupCommand, {
@@ -148,19 +153,39 @@ export async function ensureBranch(config: RunnerConfig, sync: Syncer): Promise<
   }
 }
 
+/**
+ * Planning runs on the default branch itself. Fast-forward it so a plan is
+ * written against the code as it is now — a revision round can start hours
+ * after the clone. Best effort: planning on a slightly stale tree still works.
+ */
+export async function refreshDefaultCheckout(config: RunnerConfig, sync: Syncer): Promise<void> {
+  const defaultBranch = config.meta.project.defaultBranch;
+  const res = await run(
+    `git fetch origin '${defaultBranch}' && git merge --ff-only 'origin/${defaultBranch}'`,
+    { cwd: config.workspace, timeoutMs: 5 * 60 * 1000 },
+  );
+  if (res.code !== 0) {
+    sync.log(
+      "warn",
+      `could not fast-forward to origin/${defaultBranch} — planning on the clone as is`,
+    );
+  }
+}
+
 export type SyncOutcome = "up-to-date" | "merged" | "conflicts" | "skipped";
 
 /**
- * Bring the task branch up to date with the branch the PR will target, right
- * before the push (§7) — main has usually moved on since the branch was cut, and
- * a PR that opens with conflicts is the user's problem to untangle by hand.
+ * Bring the task branch up to date with the branch the PR will target (§7) —
+ * at stage boundaries and right before the push. Main has usually moved on
+ * since the branch was cut, and a PR that opens with conflicts is the user's
+ * problem to untangle by hand.
  *
  * Merge, not rebase: one conflict pass instead of one per commit, no rewritten
  * history, no force-push, and re-running it after a crash is harmless.
  *
  * Returns "conflicts" with the merge deliberately left in progress for the
  * conflict-resolution agent to finish. Everything that can go wrong degrades to
- * "skipped", i.e. exactly today's behavior: push unsynced and let GitHub say so.
+ * "skipped": carry on unsynced and let GitHub say so.
  */
 export async function syncWithDefaultBranch(
   config: RunnerConfig,
@@ -178,7 +203,7 @@ export async function syncWithDefaultBranch(
   if (fetched.code !== 0) {
     sync.log(
       "warn",
-      `could not fetch origin/${defaultBranch} — pushing without syncing:\n${tail(fetched.output, 500)}`,
+      `could not fetch origin/${defaultBranch} — continuing without syncing:\n${tail(fetched.output, 500)}`,
     );
     return "skipped";
   }
@@ -202,7 +227,7 @@ export async function syncWithDefaultBranch(
     await abortLeftoverMerge(config);
     sync.log(
       "warn",
-      `merging origin/${defaultBranch} failed without conflicts — pushing without syncing:\n${tail(merge.output, 500)}`,
+      `merging origin/${defaultBranch} failed without conflicts — continuing without syncing:\n${tail(merge.output, 500)}`,
     );
     return "skipped";
   }
@@ -223,6 +248,18 @@ export async function abortLeftoverMerge(config: RunnerConfig): Promise<boolean>
   if (!(await mergeInProgress(config))) return false;
   await run("git merge --abort 2>/dev/null || true", { cwd: config.workspace });
   return true;
+}
+
+/** The commit HEAD points at, or null if git cannot say. */
+export async function headSha(config: RunnerConfig): Promise<string | null> {
+  const res = await run("git rev-parse HEAD", { cwd: config.workspace });
+  const sha = res.output.trim();
+  return res.code === 0 && /^[0-9a-f]{40}$/.test(sha) ? sha : null;
+}
+
+/** Move the branch and working tree back to `sha`, discarding everything after it. */
+export async function resetTo(config: RunnerConfig, sha: string): Promise<void> {
+  await run(`git reset -q --hard '${sha}'`, { cwd: config.workspace });
 }
 
 /** Files left unmerged by an in-progress merge. */

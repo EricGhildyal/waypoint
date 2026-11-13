@@ -9,6 +9,14 @@ export interface FeedEvent {
   createdAt: string;
 }
 
+/**
+ * The status change written when the user clicks Retry on a failed task (the
+ * reason string comes from PATCH /api/tasks/{id}).
+ */
+export function isRetry(event: FeedEvent): boolean {
+  return event.type === "STATUS_CHANGE" && event.payload.reason === "retry requested";
+}
+
 export const PIPELINE_STAGES = ["PLANNING", "IMPLEMENTATION", "REVIEW", "TESTING", "PR"] as const;
 export type PipelineStage = (typeof PIPELINE_STAGES)[number];
 
@@ -41,9 +49,9 @@ const TERMINAL_STATUSES = new Set(["DONE", "FAILED", "CANCELLED"]);
 export function buildSections(task: TaskDetail, events: FeedEvent[]): Section[] {
   const runs = sortRuns(task.stageRuns);
   const runIds = new Set(runs.map((r) => r.id));
+  // not `status === "DONE"`: a verify run finishes DONE without ever having a PR
   const prReached =
     task.status === "OPENING_PR" ||
-    task.status === "DONE" ||
     Boolean(task.prUrl) ||
     events.some((e) => e.type === "PR_OPENED");
 
@@ -75,7 +83,17 @@ export function buildSections(task: TaskDetail, events: FeedEvent[]): Section[] 
   const sections: Section[] = [];
   const setupItems = sortItems(buckets.get("setup") ?? []);
   if (setupItems.length) sections.push({ kind: "setup", items: setupItems });
+  // The PR opens after testing and before any feedback round on it, so its row
+  // sits between the two rather than below everything.
+  const prSection: Section | null = prReached
+    ? { kind: "pr", items: sortItems(buckets.get("pr") ?? []) }
+    : null;
+  let prPlaced = false;
   for (const run of runs) {
+    if (prSection && !prPlaced && run.stage === "PR_FEEDBACK") {
+      sections.push(prSection);
+      prPlaced = true;
+    }
     sections.push({
       kind: "run",
       run,
@@ -86,7 +104,7 @@ export function buildSections(task: TaskDetail, events: FeedEvent[]): Section[] 
       ),
     });
   }
-  if (prReached) sections.push({ kind: "pr", items: sortItems(buckets.get("pr") ?? []) });
+  if (prSection && !prPlaced) sections.push(prSection);
 
   if (!TERMINAL_STATUSES.has(task.status)) {
     const reachedIndex = Math.max(
@@ -113,7 +131,7 @@ export function resolveQuestionSection(task: TaskDetail, questionId: string): st
   if (!SENTINEL_RUN_IDS.has(question.stageRunId) && runs.some((r) => r.id === question.stageRunId))
     return question.stageRunId;
   // No event list at seeding time — PR-phase reachability from the task alone.
-  const prReached = task.status === "OPENING_PR" || task.status === "DONE" || Boolean(task.prUrl);
+  const prReached = task.status === "OPENING_PR" || Boolean(task.prUrl);
   return resolveByTime(runs, prReached, question.createdAt);
 }
 
@@ -139,7 +157,17 @@ function resolveByTime(runs: StageRunView[], prReached: boolean, at: string): st
   for (let i = 0; i < runs.length - 1; i++) {
     const current = runs[i];
     const next = runs[i + 1];
-    if (current && next && at < next.startedAt) return current.id;
+    if (current && next && at < next.startedAt) {
+      // between the pipeline's last run and the first feedback round the task
+      // is in its PR phase — those events belong to the PR row, not to testing
+      const prGap =
+        prReached &&
+        next.stage === "PR_FEEDBACK" &&
+        current.stage !== "PR_FEEDBACK" &&
+        current.endedAt !== null &&
+        at > current.endedAt;
+      return prGap ? "pr" : current.id;
+    }
   }
   if (last.endedAt === null || at <= last.endedAt) return last.id;
   return prReached ? "pr" : last.id;

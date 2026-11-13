@@ -42,6 +42,8 @@ const TASK_STATUSES = new Set([
   "PAUSED",
   "RATE_LIMITED",
   "OPENING_PR",
+  "PR_OPEN",
+  "ADDRESSING_FEEDBACK",
   "DONE",
   "FAILED",
   "CANCELLED",
@@ -79,9 +81,22 @@ export async function getTaskList(filter: {
         cacheCreationTokens: true,
       },
     }),
-    db.task.count({ where: { status: { in: ["NEEDS_INPUT", "AWAITING_PLAN_APPROVAL"] } } }),
     db.task.count({
-      where: { status: { in: ["PLANNING", "IMPLEMENTING", "REVIEWING", "TESTING", "OPENING_PR"] } },
+      where: { status: { in: ["NEEDS_INPUT", "AWAITING_PLAN_APPROVAL", "PR_OPEN"] } },
+    }),
+    db.task.count({
+      where: {
+        status: {
+          in: [
+            "PLANNING",
+            "IMPLEMENTING",
+            "REVIEWING",
+            "TESTING",
+            "OPENING_PR",
+            "ADDRESSING_FEEDBACK",
+          ],
+        },
+      },
     }),
     db.task.count({ where: { status: "FAILED" } }),
   ]);

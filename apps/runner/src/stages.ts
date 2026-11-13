@@ -1,8 +1,9 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import { AgentError, runStageAgent } from "./agent";
+import { AgentError, type Effort, runStageAgent } from "./agent";
 import type { RunnerConfig } from "./config";
-import { runFormatAndLint, runTestGate } from "./coverage";
+import { runFormatAndLint, runTestGate, testGateLabel } from "./coverage";
+import { dockerEnabled } from "./dockerd";
 import { spawnDetached, tail } from "./proc";
 import { renderPrompt } from "./prompts";
 import type { StateStore } from "./state";
@@ -17,21 +18,72 @@ import {
   type FindingCategory,
   type Findings,
   REVIEW_CYCLE_CAP,
+  type StageName,
   TESTING_CYCLE_CAP,
+  isPlanApproval,
   parseFindingSelection,
 } from "./types";
 import {
+  abortLeftoverMerge,
   commitLeftovers,
   conflictedFiles,
   ensureBranch,
   mergeInProgress,
   pushBranch,
   readWorkspaceFile,
+  refreshDefaultCheckout,
+  resetTo,
+  type SyncOutcome,
+  headSha,
   syncWithDefaultBranch,
 } from "./workspace";
 
-const IMPL_GATE_CAP = 10;
+const IMPL_GATE_CAP = 5;
 const MERGE_GATE_CAP = 3;
+const PR_FEEDBACK_GATE_CAP = 3;
+
+type Role = StageName | "MERGE";
+
+/**
+ * Thinking effort per agent role, by task difficulty. Planning and review
+ * default to Fable 5.2, whose recommended starting point is `high`; the other
+ * roles default to Opus 5.5, whose recommended starting point is `medium`.
+ * That is the MEDIUM row. An easy task steps down (the model's lower levels
+ * handle well-specified work, at a fraction of the tokens); a hard one steps
+ * the Opus roles up. Fable stays at `high` even there: gains above it are
+ * uneven and cost many times the tokens. Merge-conflict resolution never drops
+ * below `medium` — its difficulty comes from the conflict, not the task.
+ */
+const EFFORT: Record<string, Record<Role, Effort>> = {
+  EASY: {
+    PLANNING: "medium",
+    IMPLEMENTATION: "low",
+    REVIEW: "medium",
+    TESTING: "low",
+    MERGE: "medium",
+    PR_FEEDBACK: "low",
+  },
+  MEDIUM: {
+    PLANNING: "high",
+    IMPLEMENTATION: "medium",
+    REVIEW: "high",
+    TESTING: "medium",
+    MERGE: "medium",
+    PR_FEEDBACK: "medium",
+  },
+  HARD: {
+    PLANNING: "high",
+    IMPLEMENTATION: "high",
+    REVIEW: "high",
+    TESTING: "medium",
+    MERGE: "high",
+    PR_FEEDBACK: "high",
+  },
+};
+
+function effortFor(config: RunnerConfig, role: Role): Effort {
+  return (EFFORT[config.meta.difficulty] ?? EFFORT.MEDIUM)?.[role] ?? "medium";
+}
 
 // ---------------------------------------------------------------------------
 // Planning (§7) — fresh session; output contract: /workspace/.waypoint/plan.md
@@ -45,6 +97,8 @@ export async function runPlanning(
   const attempt = state.nextAttempt("PLANNING");
   const model = config.meta.models.planning;
   await sync.stageStart({ action: "start", stage: "PLANNING", attempt, model });
+  // plan against the default branch as it is now, not as it was at clone time
+  await refreshDefaultCheckout(config, sync);
 
   const notes = state.get().planNotes;
   const stagePrompt = renderPrompt("planning", config);
@@ -72,6 +126,7 @@ export async function runPlanning(
     stage: "PLANNING",
     attempt,
     model,
+    effort: effortFor(config, "PLANNING"),
     initialPrompt: prompt,
     resumeSessionId,
     freshPrompt,
@@ -79,7 +134,7 @@ export async function runPlanning(
       const plan = await readWorkspaceFile(config, ".waypoint/plan.md");
       if (!plan && nudges < 2) {
         nudges++;
-        return "You have not written /workspace/.waypoint/plan.md yet. Write the complete plan there now — it is the only output of this stage.";
+        return "`/workspace/.waypoint/plan.md` does not exist yet. Write the complete plan there in the format from your instructions; it is the only output of this stage.";
       }
       return null;
     },
@@ -119,6 +174,13 @@ export async function awaitPlanApproval(
   sync: Syncer,
   state: StateStore,
 ): Promise<void> {
+  if (config.meta.autoApprovePlan) {
+    // Easy tasks skip the gate (Settings → "Auto-approve easy plans"). The
+    // plan is still on the task page, and the pull request is still reviewed.
+    sync.log("info", "easy task — plan approved automatically, starting implementation");
+    state.update({ phase: "IMPLEMENTING", planNotes: null });
+    return;
+  }
   const plan = (await readWorkspaceFile(config, ".waypoint/plan.md")) ?? "(plan missing)";
   const answer = await sync.ask({
     kind: "PLAN_APPROVAL",
@@ -126,7 +188,7 @@ export async function awaitPlanApproval(
     contextSummary: `The plan for "${config.meta.title}" is ready. Reply "approve" to start implementation, or reply with revision notes.`,
   });
 
-  if (/^approve/i.test(answer.trim())) {
+  if (isPlanApproval(answer)) {
     sync.log("info", "plan approved — starting implementation");
     state.update({ phase: "IMPLEMENTING", planNotes: null });
   } else {
@@ -149,13 +211,19 @@ export async function runImplementation(
   const model = config.meta.models.implementation;
   await sync.stageStart({ action: "start", stage: "IMPLEMENTATION", attempt, model });
   await ensureBranch(config, sync);
+  await syncAtBoundary(config, sync, state, "IMPLEMENTATION", attempt);
 
   const pending = state.get().pendingFindings;
   const priorSession = state.get().sessions.IMPLEMENTATION;
   const plan = (await readWorkspaceFile(config, ".waypoint/plan.md")) ?? "";
   const stagePrompt = renderPrompt("implementation", config, { PLAN: plan });
   const fixup = pending && priorSession ? pending : undefined;
-  const prompt = fixup ? fixupPrompt(fixup) : stagePrompt;
+  // A session with no findings pending means this round was interrupted (a
+  // long rate limit or pause, an unanswered question, a lost heartbeat — the
+  // container was stopped and started again). Pick that session back up
+  // instead of handing a new agent the plan as if nothing had been built.
+  const interrupted = !pending && priorSession ? priorSession : undefined;
+  const prompt = fixup ? fixupPrompt(fixup) : interrupted ? CONTINUE_PROMPT : stagePrompt;
   // Used only if that session is gone: the fix-up prompt assumes the prior
   // conversation, so a fresh agent needs the plan and stage rules back — plus
   // a note that the plan is already done, or it would implement it twice.
@@ -169,7 +237,15 @@ export async function runImplementation(
         "",
         fixupPrompt(fixup),
       ].join("\n")
-    : undefined;
+    : interrupted
+      ? [
+          stagePrompt,
+          "",
+          "---",
+          "",
+          `An earlier session already started on this plan and was interrupted; it is no longer available. Its commits are on this branch (\`git log origin/${config.meta.project.defaultBranch}..HEAD\`) and its uncommitted work was committed as a checkpoint. Read what is there first, then continue from where it stopped instead of starting over.`,
+        ].join("\n")
+      : undefined;
 
   let gateRounds = 0;
   let askedPrMd = false;
@@ -178,8 +254,9 @@ export async function runImplementation(
     stage: "IMPLEMENTATION",
     attempt,
     model,
+    effort: effortFor(config, "IMPLEMENTATION"),
     initialPrompt: prompt,
-    resumeSessionId: fixup ? priorSession : undefined,
+    resumeSessionId: fixup ? priorSession : interrupted,
     freshPrompt,
     onTurnComplete: async () => {
       // Loop: tests green AND changed-line coverage ≥ bar → then format+lint →
@@ -188,7 +265,7 @@ export async function runImplementation(
       if (gateRounds > IMPL_GATE_CAP) {
         const answer = await sync.ask({
           kind: "QUESTION",
-          text: `Implementation has been through ${IMPL_GATE_CAP} verification rounds without getting tests green at the coverage bar. Keep going, or cancel?`,
+          text: `Implementation has been through ${IMPL_GATE_CAP} verification rounds without clearing the test gate. Keep going, or cancel?`,
           contextSummary: `"${config.meta.title}" can't clear its test/coverage gate after ${IMPL_GATE_CAP} rounds.`,
           options: [CYCLE_CAP_OPTION_CONTINUE, CYCLE_CAP_OPTION_CANCEL],
         });
@@ -198,12 +275,7 @@ export async function runImplementation(
         gateRounds = 0;
       }
 
-      sync.log(
-        "info",
-        config.meta.project.testCommand
-          ? "running test + coverage gate"
-          : "no test command configured — skipping test + coverage gate",
-      );
+      sync.log("info", testGateLabel(config));
       const gate = await runTestGate(config);
       if (!gate.ok) return gate.feedback;
 
@@ -213,7 +285,7 @@ export async function runImplementation(
       const prMd = await readWorkspaceFile(config, ".waypoint/pr.md");
       if (!prMd && !askedPrMd) {
         askedPrMd = true;
-        return "All checks pass. Final step: write /workspace/.waypoint/pr.md — a short summary of the changes plus any special-implementation-detail notes tied to the original prompt, nothing else. Then make a final commit if anything is uncommitted.";
+        return 'All checks pass. Write `/workspace/.waypoint/pr.md` as described under "Final step", then commit anything still uncommitted.';
       }
       return null;
     },
@@ -233,6 +305,9 @@ export async function runImplementation(
   state.update({ pendingFindings: null, phase: "REVIEW" });
 }
 
+const CONTINUE_PROMPT =
+  "You were interrupted and the container was restarted. Continue where you left off: check `git status` and your task list, then pick the work back up from the last completed step.";
+
 function fixupPrompt(pending: { source: "review" | "testing"; findings: Findings }): string {
   const items = pending.findings.findings
     .map(
@@ -242,7 +317,7 @@ function fixupPrompt(pending: { source: "review" | "testing"; findings: Findings
     .join("\n");
   return [
     pending.source === "review"
-      ? "The code review requested changes and the user approved the findings below. Address every one of them, keeping the plan's intent, and change nothing else — findings the user declined have already been dropped from this list. Commit as you go."
+      ? "The code review requested changes and the user approved the findings below. Address each one, keeping the plan's intent. Limit the diff to these findings and what they force; findings the user declined have already been dropped from this list. Commit as you go."
       : "The testing stage found problems while exercising the app in a real browser. Fix them, keeping the plan's intent. Commit as you go.",
     "",
     items,
@@ -270,18 +345,19 @@ export async function runReview(
     stage: "REVIEW",
     attempt,
     model,
+    effort: effortFor(config, "REVIEW"),
     initialPrompt: renderPrompt("review", config, { PLAN: plan }),
     onTurnComplete: async () => {
-      const findings = await readWorkspaceFile(config, ".waypoint/review-findings.json");
-      if (!findings && nudges < 2) {
+      const problem = await findingsProblem(config, ".waypoint/review-findings.json");
+      if (problem && nudges < 2) {
         nudges++;
-        return 'You have not written /workspace/.waypoint/review-findings.json yet. Write it now with the exact contract: { "verdict": "approve" | "request_changes", "findings": [{ "severity", "category", "file", "description", "suggestion" }] } — "category" is required on every finding.';
+        return `\`/workspace/.waypoint/review-findings.json\` ${problem}. Write it now using the JSON contract from your instructions. If you found nothing, write an \`approve\` verdict with an empty \`findings\` array.`;
       }
       return null;
     },
   });
 
-  const findings = await readFindings(config, ".waypoint/review-findings.json");
+  const findings = await readFindings(config, sync, ".waypoint/review-findings.json");
   await sync.stageEnd({
     action: "end",
     stage: "REVIEW",
@@ -428,12 +504,7 @@ export async function runTesting(
   // final time (when configured), push, and hand off to PR creation.
   if (config.meta.skipTesting) {
     sync.log("info", "browser testing skipped for this task — running test suite, then pushing");
-    sync.log(
-      "info",
-      project.testCommand
-        ? "running test + coverage gate"
-        : "no test command configured — skipping test + coverage gate",
-    );
+    sync.log("info", testGateLabel(config));
     const gate = await runTestGate(config);
     if (!gate.ok) {
       // a red suite is a TEST finding, not an infra failure — bounce (§7)
@@ -457,7 +528,10 @@ export async function runTesting(
     }
 
     const findings: Findings = { verdict: "approve", findings: [] };
-    await syncAndPush(config, sync, state, attempt);
+    // the merge below needs a clean tree, and whatever the gate or the review
+    // left behind belongs on the branch rather than in a merge commit
+    await commitLeftovers(config, "chore: finalize before push");
+    await syncAndPush(config, sync, state, "TESTING", attempt);
     const prMd =
       (await readWorkspaceFile(config, ".waypoint/pr.md")) ?? "Automated change by Waypoint.";
     await sync.stageEnd({
@@ -474,6 +548,10 @@ export async function runTesting(
     return;
   }
 
+  // Test against the default branch as it is now: a change that landed since
+  // the branch was cut is exactly what a browser pass should run on top of.
+  await syncAtBoundary(config, sync, state, "TESTING", attempt);
+
   sync.log("info", `starting app: ${project.runCommand}`);
   const app = spawnDetached(project.runCommand, {
     cwd: config.workspace,
@@ -481,7 +559,7 @@ export async function runTesting(
   });
 
   try {
-    const ready = await waitForReady(project.runReadyUrl, 120_000);
+    const ready = await waitForReady(project.runReadyUrl, READY_TIMEOUT_MS());
     if (!ready) {
       // readiness timeout is a TEST finding, not an infra failure (§7)
       const findings: Findings = {
@@ -491,7 +569,7 @@ export async function runTesting(
             severity: "high",
             category: "bug",
             file: "(run)",
-            description: `The app failed to become ready at ${project.runReadyUrl} within 120s when started with \`${project.runCommand}\`. Log tail:\n${tail(app.output(), 3000)}`,
+            description: `The app failed to become ready at ${project.runReadyUrl} within ${READY_TIMEOUT_MS() / 1000}s when started with \`${project.runCommand}\`. Log tail:\n${tail(app.output(), 3000)}`,
           },
         ],
       };
@@ -513,22 +591,23 @@ export async function runTesting(
       stage: "TESTING",
       attempt,
       model,
+      effort: effortFor(config, "TESTING"),
       playwright: true,
       initialPrompt: renderPrompt("testing", config, {
         PLAN: (await readWorkspaceFile(config, ".waypoint/plan.md")) ?? "",
         APP_URL: project.runReadyUrl ?? "http://localhost:3000",
       }),
       onTurnComplete: async () => {
-        const findings = await readWorkspaceFile(config, ".waypoint/test-findings.json");
-        if (!findings && nudges < 2) {
+        const problem = await findingsProblem(config, ".waypoint/test-findings.json");
+        if (problem && nudges < 2) {
           nudges++;
-          return 'You have not written /workspace/.waypoint/test-findings.json yet. Write it now: { "verdict": "approve" | "request_changes", "findings": [{ "file", "description", "suggestion" }] } — and make sure the Playwright specs for validated flows are committed.';
+          return `\`/workspace/.waypoint/test-findings.json\` ${problem}. Write it now using the JSON contract from your instructions. If you found nothing, write an \`approve\` verdict with an empty \`findings\` array. Commit the Playwright specs for the flows you validated.`;
         }
         return null;
       },
     });
 
-    const findings = await readFindings(config, ".waypoint/test-findings.json");
+    const findings = await readFindings(config, sync, ".waypoint/test-findings.json");
     await commitLeftovers(config, "test: persist validated Playwright specs");
     await fs.rm(path.join(config.workspace, ".waypoint/test-findings.json"), { force: true });
 
@@ -557,7 +636,7 @@ export async function runTesting(
     // minutes resolving conflicts. The `finally` kill stays as the safety net
     // for every other exit path.
     app.kill();
-    await syncAndPush(config, sync, state, attempt);
+    await syncAndPush(config, sync, state, "TESTING", attempt);
     const prMd =
       (await readWorkspaceFile(config, ".waypoint/pr.md")) ?? "Automated change by Waypoint.";
     await sync.stageEnd({
@@ -586,27 +665,36 @@ async function syncAndPush(
   config: RunnerConfig,
   sync: Syncer,
   state: StateStore,
+  stage: "TESTING" | "PR_FEEDBACK",
+  attempt: number,
+): Promise<SyncOutcome> {
+  // A crash in phase PUSH re-runs the whole testing stage as a fresh attempt.
+  // The PR-feedback round keeps its own phase, so a crash re-runs that instead.
+  if (stage === "TESTING") state.update({ phase: "PUSH" });
+  const outcome = await syncWithDefaultBranch(config, sync);
+  if (outcome === "conflicts") await resolveMergeConflicts(config, sync, state, stage, attempt);
+  await pushBranch(config, sync);
+  return outcome;
+}
+
+/**
+ * Pick up whatever landed on the default branch since this task last looked,
+ * at a point where no agent is mid-edit (the start of an implementation round,
+ * the start of testing). This is how a merged PR reaches every task that is
+ * still in flight: conflicts surface while they are small and an agent is about
+ * to work on the code anyway, instead of all at once before the push.
+ */
+async function syncAtBoundary(
+  config: RunnerConfig,
+  sync: Syncer,
+  state: StateStore,
+  stage: StageName,
   attempt: number,
 ): Promise<void> {
-  state.update({ phase: "PUSH" });
+  // the merge needs a clean tree; whatever is lying around belongs to the task
+  await commitLeftovers(config, "chore: checkpoint before syncing with the default branch");
   const outcome = await syncWithDefaultBranch(config, sync);
-
-  if (outcome === "conflicts") {
-    // Deliberate simplification: the conflict agent runs as part of the TESTING
-    // stage run, so it shares that run's identity. Its session id overwrites
-    // sessions.TESTING; its messages are appended to the same
-    // testing-<attempt>.jsonl transcript the testing agent wrote (expect two
-    // sessions in one file); the re-sent stageStart carries the implementation
-    // model, so the host shows that TESTING run attributed to it; the fresh
-    // session clears the checklist tracker, so the testing agent's checklist in
-    // the UI is replaced by the merge agent's; and in the skipTesting path,
-    // whose stageEnd sends no sessionId, the stage run ends up pointing at the
-    // merge session. All harmless: a crash in phase PUSH re-runs the whole
-    // testing stage as a fresh attempt anyway, and the leftover-merge abort is
-    // what makes that re-entry safe.
-    await resolveMergeConflicts(config, sync, state, attempt);
-  }
-  await pushBranch(config, sync);
+  if (outcome === "conflicts") await resolveMergeConflicts(config, sync, state, stage, attempt);
 }
 
 /**
@@ -622,17 +710,25 @@ async function resolveMergeConflicts(
   config: RunnerConfig,
   sync: Syncer,
   state: StateStore,
+  stage: StageName,
   attempt: number,
 ): Promise<void> {
   const defaultBranch = config.meta.project.defaultBranch;
   const conflicts = await conflictedFiles(config);
+  // while the merge is in progress HEAD is still the branch tip from before it
+  const preMerge = await headSha(config);
 
   let nudges = 0;
   let gateRounds = 0;
+  // The conflict agent borrows the calling stage's run: its messages land in
+  // that stage's transcript and its tokens on that stage's usage. `auxiliary`
+  // keeps it from replacing the stage's session id or the user's checklist.
   await runStageAgent(config, sync, state, {
-    stage: "TESTING",
+    stage,
     attempt,
     model: config.meta.models.implementation,
+    effort: effortFor(config, "MERGE"),
+    auxiliary: true,
     initialPrompt: renderPrompt("merge", config, {
       CONFLICT_FILES: conflicts.map((file) => `- \`${file}\``).join("\n"),
     }),
@@ -650,6 +746,11 @@ async function resolveMergeConflicts(
             ? "The merge is still in progress. Finish it now: resolve every conflicted file (`git diff --name-only --diff-filter=U` lists what is left), `git add` each one, then `git commit --no-edit`. Do not abort the merge."
             : `The merge is committed, but conflict markers are still in the file(s) below — that content is about to be pushed. Rewrite each one into the resolution you intended (no \`<<<<<<<\`, \`=======\` or \`>>>>>>>\` lines left), then commit.\n\n${marked.map((file) => `- ${file}`).join("\n")}`;
         }
+        // Put the branch back where it was. Leaving a merge commit that still
+        // contains markers at HEAD would make the next sync report "up to
+        // date", skip this check, and push the markers.
+        await abortLeftoverMerge(config);
+        if (preMerge) await resetTo(config, preMerge);
         throw new AgentError(
           unfinished
             ? `merge with origin/${defaultBranch} was left unresolved`
@@ -667,7 +768,7 @@ async function resolveMergeConflicts(
       if (gateRounds >= MERGE_GATE_CAP) {
         sync.log(
           "warn",
-          `the test gate is still failing ${MERGE_GATE_CAP} rounds after the merge — proceeding with the push, check the PR`,
+          `the test gate is still failing ${MERGE_GATE_CAP} rounds after the merge — carrying on, check the PR`,
         );
         return null;
       }
@@ -753,33 +854,189 @@ async function waitForStop(sync: Syncer): Promise<never> {
   }
 }
 
-export async function awaitStop(sync: Syncer): Promise<void> {
+/**
+ * The pipeline is finished and the PR is (about to be) open. Returns "stop"
+ * when the host says to exit, or "feedback" when it has revived this container
+ * to work on the pull request again — review comments, or a conflict with the
+ * default branch. `acceptFeedback` is false once this process has already done
+ * a feedback round: the host keeps sending the same feedback until it has
+ * processed the stage end, and that must not start a second round.
+ */
+export async function awaitStop(
+  sync: Syncer,
+  acceptFeedback: boolean,
+): Promise<"stop" | "feedback"> {
   sync.log("info", "pipeline complete — waiting for the host to finish up");
-  try {
-    await waitForStop(sync);
-  } catch (err) {
-    if (err instanceof StopRequested) return;
-    throw err;
+  for (;;) {
+    if (sync.control === "stop") return "stop";
+    if (acceptFeedback && sync.prFeedback !== undefined) return "feedback";
+    await sleep(2000);
   }
 }
 
-async function readFindings(config: RunnerConfig, relative: string): Promise<Findings> {
-  const raw = await readWorkspaceFile(config, relative);
-  if (!raw) return { verdict: "approve", findings: [] };
-  try {
-    const parsed = JSON.parse(raw) as Findings;
-    if (parsed.verdict !== "approve" && parsed.verdict !== "request_changes") {
-      return { verdict: "approve", findings: [] };
-    }
-    // an unrecognized/missing category falls to "other", i.e. it needs approval
-    const findings = parsed.findings ?? [];
-    for (const f of findings) {
-      if (!CATEGORIES.has(f.category)) f.category = "other";
-    }
-    return { verdict: parsed.verdict, findings };
-  } catch {
-    return { verdict: "approve", findings: [] };
+// ---------------------------------------------------------------------------
+// PR feedback — the user commented on the open pull request, or it no longer
+// merges cleanly. Fresh session: the implementation session's cache is long
+// gone and its container may have been recreated, so the prompt stands alone.
+// ---------------------------------------------------------------------------
+
+export async function runPrFeedback(
+  config: RunnerConfig,
+  sync: Syncer,
+  state: StateStore,
+): Promise<void> {
+  // Always taken from the host, never from state.json: the host re-sends it on
+  // every sync while the task is ADDRESSING_FEEDBACK, so a restarted container
+  // gets the current round's feedback rather than a stale copy.
+  const feedback = await waitForPrFeedback(sync);
+  const attempt = state.nextAttempt("PR_FEEDBACK");
+  const model = config.meta.models.implementation;
+  await sync.stageStart({ action: "start", stage: "PR_FEEDBACK", attempt, model });
+  await ensureBranch(config, sync);
+  // a reply left over from a round that crashed after writing it is stale —
+  // it would be posted again as this round's
+  await fs.rm(path.join(config.workspace, ".waypoint/pr-reply.md"), { force: true });
+
+  let sessionId: string | undefined;
+  if (feedback.trim()) {
+    let gateRounds = 0;
+    let askedReply = false;
+    const result = await runStageAgent(config, sync, state, {
+      stage: "PR_FEEDBACK",
+      attempt,
+      model,
+      effort: effortFor(config, "PR_FEEDBACK"),
+      initialPrompt: renderPrompt("pr-feedback", config, {
+        PLAN: (await readWorkspaceFile(config, ".waypoint/plan.md")) ?? "(plan not available)",
+        FEEDBACK: feedback,
+      }),
+      onTurnComplete: async () => {
+        const gate = await runTestGate(config);
+        const checks = gate.ok ? await runFormatAndLint(config) : gate;
+        if (!checks.ok) {
+          gateRounds++;
+          if (gateRounds < PR_FEEDBACK_GATE_CAP) return checks.feedback;
+          // same posture as the merge gate: a pushed fix with a visible red
+          // check beats a pull request stuck waiting on a loop
+          sync.log(
+            "warn",
+            `checks are still failing after ${PR_FEEDBACK_GATE_CAP} rounds — pushing anyway, check the PR`,
+          );
+        }
+        const reply = await readWorkspaceFile(config, ".waypoint/pr-reply.md");
+        if (!reply && !askedReply) {
+          askedReply = true;
+          return 'Write `/workspace/.waypoint/pr-reply.md` as described under "Final step", then commit anything still uncommitted.';
+        }
+        return null;
+      },
+    });
+    sessionId = result.sessionId;
+  } else {
+    sync.log("info", "no review comments to address — syncing with the default branch");
   }
+
+  await commitLeftovers(config, "chore: address pull request feedback");
+  const outcome = await syncAndPush(config, sync, state, "PR_FEEDBACK", attempt);
+  if (!feedback.trim() && (outcome === "skipped" || outcome === "up-to-date")) {
+    // This round existed only to make the pull request mergeable, and it
+    // changed nothing — ending it normally would have the host start the same
+    // round again a minute later, forever. Fail it so a person looks.
+    throw new Error(
+      `the pull request does not merge cleanly, and syncing with origin/${config.meta.project.defaultBranch} did not change that (${outcome}) — resolve it on the branch by hand, then retry`,
+    );
+  }
+
+  const prMd = await readWorkspaceFile(config, ".waypoint/pr.md");
+  const reply = await readWorkspaceFile(config, ".waypoint/pr-reply.md");
+  await sync.stageEnd({
+    action: "end",
+    stage: "PR_FEEDBACK",
+    attempt,
+    status: "SUCCEEDED",
+    sessionId,
+    artifacts: [
+      ...(prMd ? [{ name: "pr.md", content: prMd }] : []),
+      ...(reply ? [{ name: "pr-reply.md", content: reply }] : []),
+    ],
+  });
+  // the reply is per round — a leftover would be posted again next time
+  await fs.rm(path.join(config.workspace, ".waypoint/pr-reply.md"), { force: true });
+  state.update({ phase: "AWAIT_STOP" });
+}
+
+async function waitForPrFeedback(sync: Syncer): Promise<string> {
+  for (;;) {
+    if (sync.control === "stop") throw new StopRequested();
+    if (sync.prFeedback !== undefined) return sync.prFeedback;
+    await sleep(2000);
+  }
+}
+
+const SEVERITIES = new Set(["high", "medium", "low"]);
+
+/**
+ * Parse a findings file into the exact shape the host accepts, or say what is
+ * wrong with it. Agents write this file by hand: one invented severity or a
+ * missing field would otherwise be rejected by the host's schema on every
+ * sync, taking the heartbeat down with it.
+ */
+function parseFindings(raw: string): Findings | string {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (err) {
+    return `is not valid JSON (${err instanceof Error ? err.message : String(err)})`;
+  }
+  const doc = parsed as { verdict?: unknown; findings?: unknown } | null;
+  if (doc?.verdict !== "approve" && doc?.verdict !== "request_changes") {
+    return 'needs a "verdict" of "approve" or "request_changes"';
+  }
+  const findings: Finding[] = [];
+  for (const entry of Array.isArray(doc.findings) ? doc.findings : []) {
+    if (!entry || typeof entry !== "object") continue;
+    const f = entry as Record<string, unknown>;
+    const description = typeof f.description === "string" ? f.description.trim() : "";
+    if (!description) continue;
+    findings.push({
+      ...(SEVERITIES.has(f.severity as string)
+        ? { severity: f.severity as Finding["severity"] }
+        : {}),
+      // an unrecognized/missing category falls to "other", i.e. it needs approval
+      category: CATEGORIES.has(f.category as FindingCategory)
+        ? (f.category as FindingCategory)
+        : "other",
+      file: typeof f.file === "string" && f.file ? f.file : "(unspecified)",
+      description,
+      ...(typeof f.suggestion === "string" && f.suggestion ? { suggestion: f.suggestion } : {}),
+    });
+  }
+  if (doc.verdict === "request_changes" && findings.length === 0) {
+    return 'has a "request_changes" verdict but no finding with a "description"';
+  }
+  return { verdict: doc.verdict, findings };
+}
+
+/** What to tell the agent about its findings file, or null when it is usable. */
+async function findingsProblem(config: RunnerConfig, relative: string): Promise<string | null> {
+  const raw = await readWorkspaceFile(config, relative);
+  if (!raw) return "does not exist yet";
+  const parsed = parseFindings(raw);
+  return typeof parsed === "string" ? parsed : null;
+}
+
+async function readFindings(
+  config: RunnerConfig,
+  sync: Syncer,
+  relative: string,
+): Promise<Findings> {
+  const raw = await readWorkspaceFile(config, relative);
+  const parsed = raw ? parseFindings(raw) : "does not exist";
+  if (typeof parsed !== "string") return parsed;
+  // the agent was nudged twice and still left nothing usable — say so, since
+  // carrying on as "approved" is otherwise indistinguishable from a clean pass
+  sync.log("warn", `${relative} ${parsed} — treating the stage as approved with no findings`);
+  return { verdict: "approve", findings: [] };
 }
 
 const CATEGORIES = new Set<FindingCategory>([
@@ -804,6 +1061,12 @@ function parseCheckboxes(markdown: string): ChecklistItem[] {
   }
   return items;
 }
+
+/**
+ * How long the app gets to answer on its ready URL. A compose stack may still
+ * be building images and waiting on a database the first time it comes up.
+ */
+const READY_TIMEOUT_MS = (): number => (dockerEnabled() ? 600_000 : 120_000);
 
 async function waitForReady(url: string | null, timeoutMs: number): Promise<boolean> {
   if (!url) {

@@ -17,12 +17,14 @@ import {
   listTaskContainers,
   recreateTaskContainer,
   removeContainer,
+  secretsFingerprint,
   startExistingContainer,
   startTask,
   stopContainer,
 } from "./docker";
 import { dispatchEmails } from "./email";
 import { openPendingPrs } from "./pr";
+import { pollOpenPrs, prRoundsWaiting } from "./pr-poll";
 import { runRetention } from "./retention";
 
 const IDLE_STOP_MS = 15 * 60 * 1000;
@@ -42,8 +44,11 @@ export async function tick(): Promise<void> {
   await stopIdleContainers();
   await resumeRateLimited();
   await detectHeartbeatLoss();
-  await reconcile();
+  // before reconcile: a PR moved to ADDRESSING_FEEDBACK here gets its container
+  // started in this same tick
   await openPendingPrs();
+  await pollOpenPrs();
+  await reconcile();
   await dispatchEmails();
   await maybeDailyRetention();
 }
@@ -106,7 +111,8 @@ async function fillSlots(): Promise<void> {
 
   const max = await getNumberSetting("maxParallelTasks");
   const active = await db.task.count({ where: { status: { in: ACTIVE_STATUSES } } });
-  let free = max - active;
+  // slots held back for pull requests whose feedback is waiting on a runner
+  let free = max - active - prRoundsWaiting();
   if (free <= 0) return;
 
   const queued = await db.task.findMany({
@@ -212,6 +218,9 @@ async function detectHeartbeatLoss(): Promise<void> {
       await stopContainer(task.containerId);
       const started = await startExistingContainer(task.containerId);
       if (!started) {
+        // gone or broken — never leave it beside its replacement: two runners
+        // on one workspace volume would trample each other
+        await removeContainer(task.containerId);
         try {
           await recreateTaskContainer(task.id);
         } catch (err) {
@@ -231,7 +240,10 @@ async function detectHeartbeatLoss(): Promise<void> {
  */
 export async function reconcile(): Promise<void> {
   const containers = await listTaskContainers();
-  const byTask = new Map(containers.map((c) => [c.taskId, c]));
+  // if a task somehow has two, the running one is the one that counts
+  const byTask = new Map(
+    containers.toSorted((a, b) => Number(a.running) - Number(b.running)).map((c) => [c.taskId, c]),
+  );
 
   // running-status tasks must have a running container
   const shouldRun = await db.task.findMany({
@@ -240,7 +252,16 @@ export async function reconcile(): Promise<void> {
   for (const task of shouldRun) {
     const container = byTask.get(task.id);
     if (container?.running) continue;
-    if (container) {
+    // A stopped container still holds the tokens it was created with. A PR can
+    // sit open for weeks; if a token was rotated since, restarting would run
+    // the round on a dead credential — recreate instead (the volume has all
+    // the state that matters).
+    const stale =
+      container?.secrets !== undefined && container.secrets !== (await secretsFingerprint(task.id));
+    if (container && stale) {
+      console.log(`[tick] reconcile: credentials changed — recreating container for ${task.id}`);
+      await removeContainer(container.id);
+    } else if (container) {
       const ok = await startExistingContainer(container.id);
       if (ok) {
         await db.task.update({

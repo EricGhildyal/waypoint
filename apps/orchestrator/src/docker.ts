@@ -1,16 +1,34 @@
+import { createHash } from "node:crypto";
+import { promises as fs } from "node:fs";
+import path from "node:path";
 import Docker from "dockerode";
-import { db, emitEvent, getNumberSetting, renderBranchTemplate, transition } from "@waypoint/core";
+import {
+  db,
+  emitEvent,
+  getNumberSetting,
+  getSetting,
+  renderBranchTemplate,
+  taskDataDir,
+  transition,
+} from "@waypoint/core";
 import type { Task, TaskMeta } from "@waypoint/core";
-import { VERIFY_PROMPT_SENTINEL } from "@waypoint/core";
+import { VERIFY_PROMPT_SENTINEL, parseTestSuites } from "@waypoint/core";
 import { env } from "./env";
-import { gitPatFor, globalSecret, projectSecretEnv } from "./secrets";
+import { gitBotTokenFor, gitPatFor, globalSecret, projectSecretEnv } from "./secrets";
 
 export const docker = new Docker({ socketPath: env.dockerSocket });
 
 export const TASK_LABEL = "waypoint.task";
+/** Hash of the credentials a container was created with — see secretsFingerprint(). */
+const SECRETS_LABEL = "waypoint.secrets";
 
 export function volumeName(taskId: string): string {
   return `waypoint-task-${taskId}`;
+}
+
+/** The nested Docker daemon's storage, for tasks of projects that enable it. */
+export function dockerVolumeName(taskId: string): string {
+  return `waypoint-task-${taskId}-docker`;
 }
 
 type TaskWithProject = Task & {
@@ -85,10 +103,11 @@ async function createTaskContainer(
   await ensureVolume(volumeName(task.id));
   await ensureNetwork(env.tasksNetwork);
 
-  const claudeToken = await globalSecret("CLAUDE_CODE_OAUTH_TOKEN");
-  const gitPat = await gitPatFor(task.projectId);
-  const secrets = await projectSecretEnv(task.projectId);
-  delete secrets.GIT_PAT; // delivered separately below
+  const { claudeToken, gitPat, secrets } = await taskSecrets(task.projectId);
+  const nestedDocker = task.project.dockerEnabled;
+  // The daemon's storage can't sit on the container's own overlay filesystem,
+  // and on a volume the images it builds survive a retry.
+  if (nestedDocker) await ensureVolume(dockerVolumeName(task.id));
 
   const meta: TaskMeta = {
     taskId: task.id,
@@ -98,6 +117,8 @@ async function createTaskContainer(
     branchName,
     verify: task.prompt === VERIFY_PROMPT_SENTINEL,
     skipTesting: task.skipTesting,
+    autoApprovePlan:
+      task.difficulty === "EASY" && (await getSetting("autoApproveEasyPlans")) !== "false",
     models: {
       planning: task.planningModel,
       implementation: task.implementationModel,
@@ -112,13 +133,10 @@ async function createTaskContainer(
       runCommand: task.project.runCommand,
       runReadyUrl: task.project.runReadyUrl,
       migrateCommand: task.project.migrateCommand,
-      testCommand: task.project.testCommand,
-      coverageFormat: task.project.coverageFormat,
-      coverageReportPath: task.project.coverageReportPath,
+      testSuites: parseTestSuites(task.project.testSuites),
       lintCommand: task.project.lintCommand,
       formatCommand: task.project.formatCommand,
       instructions: task.project.instructions,
-      coverageBar: task.project.coverageBar,
     },
   };
 
@@ -127,7 +145,10 @@ async function createTaskContainer(
   return docker.createContainer({
     name: `waypoint-task-${task.id.slice(0, 8)}-${Date.now()}`,
     Image: image,
-    Labels: { [TASK_LABEL]: task.id },
+    Labels: {
+      [TASK_LABEL]: task.id,
+      [SECRETS_LABEL]: fingerprint({ claudeToken, gitPat, secrets }, nestedDocker),
+    },
     Env: [
       `TASK_ID=${task.id}`,
       `RUNNER_TOKEN=${task.runnerToken}`,
@@ -135,16 +156,111 @@ async function createTaskContainer(
       `TASK_META=${JSON.stringify(meta)}`,
       ...(claudeToken ? [`CLAUDE_CODE_OAUTH_TOKEN=${claudeToken}`] : []),
       ...(gitPat ? [`GIT_PAT=${gitPat}`] : []),
+      // names only: which of the variables below the runner copies into the
+      // env files a compose stack reads
+      ...(nestedDocker
+        ? ["RUNNER_DOCKER=1", `PROJECT_SECRET_KEYS=${Object.keys(secrets).join(",")}`]
+        : []),
       ...Object.entries(secrets).map(([k, v]) => `${k}=${v}`),
     ],
     HostConfig: {
-      Binds: [`${volumeName(task.id)}:/workspace`, `${env.taskDataVolume}:/data/tasks`],
+      Binds: [
+        `${volumeName(task.id)}:/workspace`,
+        ...(nestedDocker ? [`${dockerVolumeName(task.id)}:/var/lib/docker`] : []),
+      ],
+      ...(nestedDocker ? nestedDockerHostConfig() : {}),
+      Mounts: [await taskDataMount(task.id)],
       NetworkMode: env.tasksNetwork,
       Memory: Math.round(memGb * 1024 ** 3),
       NanoCpus: Math.round(cpus * 1e9),
       RestartPolicy: { Name: "no" },
     },
   });
+}
+
+/** Where the runner expects its task-data directory (TASK_DATA_DIR/{taskId}). */
+const RUNNER_TASK_DATA = "/data/tasks";
+
+/**
+ * The runner's view of the task-data store: its own task's directory and
+ * nothing else. Agents run with every permission, so mounting the whole store
+ * would let one task read every other task's transcripts and plans, and write
+ * another task's PR reply or feedback file — text the orchestrator posts to
+ * GitHub or hands to another agent as the user's own words.
+ */
+async function taskDataMount(taskId: string): Promise<Docker.MountSettings> {
+  // The orchestrator sees the store at TASK_DATA_DIR. The directory must exist
+  // before the container starts: neither mount type creates it.
+  await fs.mkdir(taskDataDir(taskId), { recursive: true });
+  const Target = `${RUNNER_TASK_DATA}/${taskId}`;
+
+  // local dev (`make run`): the "volume" is a host directory
+  if (path.isAbsolute(env.taskDataVolume)) {
+    return { Type: "bind", Source: path.join(env.taskDataVolume, taskId), Target };
+  }
+
+  // A named volume is narrowed with a subpath mount, which the daemon must
+  // understand — an older one would silently mount the whole volume at the
+  // task's path instead. Refuse rather than run unisolated.
+  const { ApiVersion } = await docker.version();
+  if (Number.parseFloat(ApiVersion) < 1.45) {
+    throw new Error(
+      `Docker API ${ApiVersion} cannot mount a volume subpath — task isolation needs Docker 26 or newer`,
+    );
+  }
+  return {
+    Type: "volume",
+    Source: env.taskDataVolume,
+    Target,
+    VolumeOptions: { Subpath: taskId },
+  } as Docker.MountSettings;
+}
+
+/**
+ * What a container needs to run its own Docker daemon. Privileged by default,
+ * which lets a process in the container reach the host — the agent included,
+ * so it is granted per project, never to every task. An isolating runtime
+ * (RUNNER_DOCKER_RUNTIME, e.g. sysbox-runc) nests Docker without it.
+ */
+function nestedDockerHostConfig(): Partial<Docker.HostConfig> {
+  return env.runnerDockerRuntime ? { Runtime: env.runnerDockerRuntime } : { Privileged: true };
+}
+
+interface TaskSecrets {
+  claudeToken: string | null;
+  gitPat: string | null;
+  secrets: Record<string, string>;
+}
+
+/** The credentials a task's container is given, decrypted. */
+async function taskSecrets(projectId: string): Promise<TaskSecrets> {
+  const claudeToken = await globalSecret("CLAUDE_CODE_OAUTH_TOKEN");
+  // Clone and push as the bot when there is one: the human's own PAT then
+  // never enters a container where an agent runs with every permission.
+  const gitPat = (await gitBotTokenFor(projectId)) ?? (await gitPatFor(projectId));
+  const secrets = await projectSecretEnv(projectId);
+  delete secrets.GIT_PAT; // delivered separately
+  delete secrets.GIT_BOT_PAT; // host-only: opens, comments on and merges PRs
+  return { claudeToken, gitPat, secrets };
+}
+
+function fingerprint({ claudeToken, gitPat, secrets }: TaskSecrets, nestedDocker: boolean): string {
+  const entries = Object.entries(secrets).toSorted(([a], [b]) => a.localeCompare(b));
+  // Docker access is fixed at creation like the credentials are, so switching
+  // it on a project has to replace the container too. Left out when off, so
+  // the containers of projects that never use it keep their fingerprint.
+  const parts = [claudeToken, gitPat, entries, ...(nestedDocker ? ["docker"] : [])];
+  return createHash("sha256").update(JSON.stringify(parts)).digest("hex");
+}
+
+/**
+ * What a container for this task would be labelled if created now. A stopped
+ * container whose label differs was created with credentials that have since
+ * been rotated; its environment is fixed, so it has to be recreated.
+ */
+export async function secretsFingerprint(taskId: string): Promise<string> {
+  const task = await loadTask(taskId);
+  return fingerprint(await taskSecrets(task.projectId), task.project.dockerEnabled);
 }
 
 /**
@@ -194,6 +310,8 @@ export interface WaypointContainer {
   id: string;
   taskId: string;
   running: boolean;
+  /** undefined for containers created before the label existed */
+  secrets: string | undefined;
 }
 
 export async function listTaskContainers(): Promise<WaypointContainer[]> {
@@ -205,6 +323,7 @@ export async function listTaskContainers(): Promise<WaypointContainer[]> {
     id: c.Id,
     taskId: c.Labels[TASK_LABEL] ?? "",
     running: c.State === "running",
+    secrets: c.Labels[SECRETS_LABEL],
   }));
 }
 
