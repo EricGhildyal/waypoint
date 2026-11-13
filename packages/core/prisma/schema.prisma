@@ -24,7 +24,9 @@ enum TaskStatus {
   PAUSED // user-initiated or budget-exceeded (see pauseReason)
   RATE_LIMITED // Max plan window exhausted; auto-resumes
   OPENING_PR
-  DONE
+  PR_OPEN // PR is open on GitHub, waiting for comments / approval; holds no slot
+  ADDRESSING_FEEDBACK // runner revived to address PR comments or a conflict
+  DONE // PR merged (or a verify run finished)
   FAILED // infra failure, recoverable via Retry (see failureCode)
   CANCELLED
 }
@@ -34,6 +36,7 @@ enum Stage {
   IMPLEMENTATION
   REVIEW
   TESTING
+  PR_FEEDBACK
 }
 
 enum Difficulty {
@@ -83,14 +86,6 @@ enum FailureCode {
   PR_FAILED
 }
 
-enum CoverageFormat {
-  COBERTURA_XML
-  LCOV
-  CLOVER_XML
-  JACOCO_XML
-  GO_COVERPROFILE
-}
-
 enum EventType {
   STATUS_CHANGE
   CHECKLIST_UPDATE
@@ -118,14 +113,12 @@ model Project {
   runCommand         String // starts app for the testing stage
   runReadyUrl        String? // URL polled to detect app is up, e.g. http://localhost:3000
   migrateCommand     String?
-  testCommand        String? // must emit coverage report; null = no test/coverage gate
-  coverageFormat     CoverageFormat @default(LCOV)
-  coverageReportPath String         @default("coverage/lcov.info")
+  testSuites         String         @default("[]") // JSON TestSuite[] (see core schemas.ts); empty = no test/coverage gate
   lintCommand        String?
   formatCommand      String?
   dockerfilePath     String? // optional custom image; else generic runner image
+  dockerEnabled      Boolean        @default(false) // run a Docker daemon inside task containers (compose stacks)
   instructions       String         @default("") // project CLAUDE.md content, injected into every stage
-  coverageBar        Int            @default(100) // % of changed lines
   createdAt          DateTime       @default(now())
   updatedAt          DateTime       @updatedAt
   secrets            Secret[]
@@ -170,6 +163,12 @@ model Task {
   tokenBudget         Int? // total tokens; pause when exceeded
   branchName          String?
   prUrl               String?
+  prNumber            Int?
+  prFeedbackCursor    DateTime? // newest PR comment/review already handed to an agent
+  prCiFixSha          String? // head commit whose failing checks were last handed to an agent
+  prCiFixCount        Int               @default(0) // automatic fix rounds spent on failing checks
+  prStatus            Json? // what the last poll saw: { checks, approved, note } — shown on the task page
+  prMergeRequestedAt  DateTime? // the user pressed "Merge now"; the next poll merges
   emailMessageId      String? // outbound thread-root Message-ID for Gmail threading
   reviewCycles        Int          @default(0)
   testingCycles       Int          @default(0)
@@ -257,7 +256,7 @@ model Event {
 
 model Setting {
   // key-value — new settings need no migration (deliberate)
-  key   String @id // maxParallelTasks="3", defaultModel="claude-fable-5",
+  key   String @id // maxParallelTasks="3", defaultPlanningModel="claude-fable-5-2",
   value String // notifyOnDone="true", containerMemGb="6", ...
 }
 

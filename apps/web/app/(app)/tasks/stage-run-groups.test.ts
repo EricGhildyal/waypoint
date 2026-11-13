@@ -73,6 +73,8 @@ function makeTask(over: Partial<TaskDetail>): TaskDetail {
     tokenTotal: 0,
     branchName: null,
     prUrl: null,
+    prStatus: null,
+    prMergeRequested: false,
     reviewCycles: 0,
     testingCycles: 0,
     createdAt: iso(0),
@@ -214,6 +216,33 @@ describe("buildSections", () => {
     expect(review?.kind === "run" && review.findings).toEqual([reviewFindings]);
     const impl = sections.find((s) => s.kind === "run" && s.run.id === "impl-1");
     expect(impl?.kind === "run" && impl.findings).toEqual([]);
+  });
+
+  test("the PR row sits before the feedback rounds on it and keeps its own events", () => {
+    const feedback = run({
+      id: "fb-1",
+      stage: "PR_FEEDBACK",
+      startedAt: iso(60),
+      endedAt: iso(70),
+    });
+    // after the last pipeline run ended (35) and before the feedback round (60)
+    const prPhase = ev({ type: "STATUS_CHANGE", createdAt: iso(40) });
+    const merged = ev({ type: "STATUS_CHANGE", createdAt: iso(80) });
+    const task = makeTask({
+      status: "DONE",
+      prUrl: "https://github.com/example/repo/pull/1",
+      stageRuns: [...BOUNCE_RUNS, feedback],
+    });
+    const sections = buildSections(task, [prPhase, merged]);
+    expect(sectionKeys(sections)).toEqual(["plan-1", "impl-1", "rev-1", "impl-2", "pr", "fb-1"]);
+    const pr = sections.find((s) => s.kind === "pr");
+    expect(pr?.kind === "pr" && pr.items.map((i) => i.at)).toEqual([iso(40), iso(80)]);
+  });
+
+  test("a finished verify run has no PR row", () => {
+    const planning = run({ id: "plan-1", stage: "PLANNING", startedAt: iso(0), endedAt: iso(5) });
+    const sections = buildSections(makeTask({ status: "DONE", stageRuns: [planning] }), []);
+    expect(sectionKeys(sections)).toEqual(["plan-1"]);
   });
 
   test("terminal tasks get no placeholders", () => {

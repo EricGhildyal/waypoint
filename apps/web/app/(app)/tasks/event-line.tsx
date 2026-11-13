@@ -89,14 +89,26 @@ export function EventLine({ event }: { event: FeedEvent }) {
   const style = event.type === "LOG" ? logStyle(p) : (EVENT_STYLES[event.type] ?? "text-zinc-400");
   // narration is prose — wrap on word boundaries; everything else stays break-all
   const isProse = event.type === "LOG" && (p.source === "assistant" || p.source === "thinking");
+  // the failing command's last output — otherwise only in the debug lines the feed hides
+  const logTail =
+    event.type === "ERROR" && typeof p.logTail === "string" ? p.logTail.trimEnd() : "";
   return (
     <div className="flex gap-2">
       <span className="shrink-0 text-zinc-600">
         {new Date(event.createdAt).toLocaleTimeString(undefined, { hour12: false })}
       </span>
-      <span className={clsx(isProse ? "whitespace-pre-wrap wrap-break-word" : "break-all", style)}>
-        {text}
-      </span>
+      <div className="min-w-0">
+        <span
+          className={clsx(isProse ? "whitespace-pre-wrap wrap-break-word" : "break-all", style)}
+        >
+          {text}
+        </span>
+        {logTail && (
+          <pre className="mt-1 max-h-64 overflow-auto border-l-2 border-red-400/40 pl-2 font-mono whitespace-pre-wrap break-all text-zinc-400">
+            {logTail}
+          </pre>
+        )}
+      </div>
     </div>
   );
 }

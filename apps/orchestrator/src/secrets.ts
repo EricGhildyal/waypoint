@@ -31,3 +31,13 @@ export async function gitPatFor(projectId: string): Promise<string | null> {
   const projectRows = await projectSecretEnv(projectId);
   return projectRows.GIT_PAT ?? (await globalSecret("GIT_PAT"));
 }
+
+/**
+ * The bot account's token (per project, global fallback), or null. Pull
+ * requests are opened with it so the human can approve them — GitHub does not
+ * let you approve a pull request you authored yourself.
+ */
+export async function gitBotTokenFor(projectId: string): Promise<string | null> {
+  const projectRows = await projectSecretEnv(projectId);
+  return projectRows.GIT_BOT_PAT ?? (await globalSecret("GIT_BOT_PAT"));
+}

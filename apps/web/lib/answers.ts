@@ -5,6 +5,7 @@ import {
   STAGE_TO_STATUS,
   db,
   emitEvent,
+  isPlanApproval,
   parseFindingSelection,
   transition,
 } from "@waypoint/core";
@@ -43,7 +44,7 @@ export async function applyAnswer(
 
   if (question.kind === "PLAN_APPROVAL") {
     if (task.status !== "AWAITING_PLAN_APPROVAL") return; // paused/cancelled meanwhile
-    if (/^approve/i.test(answer)) {
+    if (isPlanApproval(answer)) {
       await transition(taskId, "IMPLEMENTING", { currentStage: "IMPLEMENTATION" });
     } else {
       // any other reply is treated as revision notes — planning resumes (attempt++)

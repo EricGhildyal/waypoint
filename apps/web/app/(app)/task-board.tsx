@@ -42,7 +42,7 @@ const SECTIONS: Array<{
   {
     key: "needsAction",
     title: "Needs Action",
-    hint: "Waiting on you — questions, plan approvals, budget/cycle pauses and recent failures.",
+    hint: "Waiting on you — questions, plan approvals, pull requests to review, budget/cycle pauses and recent failures.",
     accent: "bg-red-500",
     collapsedByDefault: false,
   },
@@ -72,6 +72,8 @@ function sectionFor(task: TaskListItem, now: number): SectionKey {
   switch (task.status) {
     case "NEEDS_INPUT":
     case "AWAITING_PLAN_APPROVAL":
+    // the pull request is waiting on your review or approval
+    case "PR_OPEN":
       return "needsAction";
     case "PAUSED":
       return task.pauseReason === "BUDGET_EXCEEDED" || task.pauseReason === "CYCLE_CAP"
@@ -89,8 +91,8 @@ function sectionFor(task: TaskListItem, now: number): SectionKey {
     case "DRAFT":
       return "pending";
     default:
-      // QUEUED, SCHEDULED, BLOCKED, RATE_LIMITED, OPENING_PR and the four
-      // working statuses all just need time, not attention
+      // QUEUED, SCHEDULED, BLOCKED, RATE_LIMITED, OPENING_PR and the working
+      // statuses all just need time, not attention
       return "pending";
   }
 }
@@ -272,7 +274,14 @@ function TaskTable({ tasks }: { tasks: TaskListItem[] }) {
           {tasks.map((t) => (
             <TRow key={t.id} onClick={() => router.push(`/tasks/${t.id}`)}>
               <TCell className="max-w-72">
-                <div className="truncate font-medium text-zinc-100">{t.title}</div>
+                {/* a real link, so the row is reachable and openable by keyboard */}
+                <Link
+                  href={`/tasks/${t.id}`}
+                  className="block truncate font-medium text-zinc-100 hover:underline"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  {t.title}
+                </Link>
                 {t.failureCode ? (
                   <div className="truncate text-xs text-red-400">{t.failureCode}</div>
                 ) : null}
@@ -285,7 +294,21 @@ function TaskTable({ tasks }: { tasks: TaskListItem[] }) {
               <TCell className="text-zinc-400">{t.projectName}</TCell>
               <TCell className="max-w-64">
                 <div className="truncate text-zinc-300">
-                  {t.currentStage ? STAGE_LABELS[t.currentStage] : (gateText(t) ?? "—")}
+                  {t.status === "PR_OPEN" && t.prUrl ? (
+                    <a
+                      href={t.prUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="text-indigo-400 hover:underline"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      Review PR ↗
+                    </a>
+                  ) : t.currentStage ? (
+                    STAGE_LABELS[t.currentStage]
+                  ) : (
+                    (gateText(t) ?? "—")
+                  )}
                 </div>
                 {t.currentChecklistItem ? (
                   <div className="truncate text-xs text-zinc-500">{t.currentChecklistItem}</div>

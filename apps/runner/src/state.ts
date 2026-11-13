@@ -11,7 +11,8 @@ export type Phase =
   | "AWAIT_FINDINGS"
   | "TESTING"
   | "PUSH"
-  | "AWAIT_STOP";
+  | "AWAIT_STOP"
+  | "PR_FEEDBACK";
 
 /**
  * Durable runner state on the workspace volume. Containers can be stopped,

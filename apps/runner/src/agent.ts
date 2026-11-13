@@ -19,6 +19,19 @@ import type { RunnerConfig } from "./config";
 import type { StateStore } from "./state";
 import { StopRequested, type Syncer, sleep } from "./sync";
 import type { StageName, UsageTotals } from "./types";
+import { epochToIso, usageWindowsFrom, utilizationPercent } from "./usage";
+
+export type Effort = "low" | "medium" | "high" | "xhigh" | "max";
+
+/**
+ * Where a turn is retried when the stage's model is overloaded or declines the
+ * request. Claude Opus 5 is one of the fallback targets Anthropic permits for
+ * both Fable 5.2 and Opus 5.5.
+ */
+const FALLBACK_MODEL = "claude-opus-5";
+
+/** Pinned to the version in package.json so `npx` cannot drift to a newer one. */
+const PLAYWRIGHT_MCP = "@playwright/mcp@0.0.78";
 
 export class RateLimited extends Error {
   constructor(public readonly resetsAt: string) {
@@ -77,6 +90,12 @@ export interface StageRunOptions {
   stage: StageName;
   attempt: number;
   model: string;
+  /**
+   * How much the model thinks. Always set: the API default differs by model
+   * (Opus 5.5 `medium`, Fable 5.2 `high`), so leaving it out would silently
+   * change behavior whenever a stage's model changes.
+   */
+  effort: Effort;
   initialPrompt: string;
   /** resume this Agent SDK session (implementation fix-up rounds, restarts) */
   resumeSessionId?: string;
@@ -88,6 +107,13 @@ export interface StageRunOptions {
   freshPrompt?: string;
   /** attach the Playwright MCP server (testing stage only, §6) */
   playwright?: boolean;
+  /**
+   * A helper agent borrowing another stage's run (the merge-conflict agent).
+   * It must not disturb that stage: its session id is not recorded, so a later
+   * fix-up round still resumes the stage's own session, and it neither clears
+   * nor updates the checklist the user is watching.
+   */
+  auxiliary?: boolean;
   /**
    * Called after each completed turn. Return a follow-up message to continue
    * the SAME query (coverage-gate loops, artifact nudges), or null to finish.
@@ -139,7 +165,7 @@ export async function runStageAgent(
 
   // A fresh session starts a fresh task list, so one stage's items don't leak
   // into the next. Fix-up rounds resume a session and keep the list they built.
-  if (!resumeSessionId) clearChecklistTracker(state);
+  if (!resumeSessionId && !opts.auxiliary) clearChecklistTracker(state);
 
   let sessionId = resumeSessionId;
   let prompt = initialPrompt;
@@ -191,9 +217,8 @@ async function executeQuery(
       tool(
         "ask_user",
         [
-          "Ask the user a question and wait for their answer.",
-          "Asking a question costs seconds; a wrong direction costs the user's precious tokens.",
-          "When uncertain about intent, scope, tradeoffs, or data, ask.",
+          "Ask the user a question and wait for the answer.",
+          "The question is emailed and the run blocks until they reply, so use it for decisions only the user can make (ambiguous intent, scope, tradeoffs with real cost), not for things you can determine from the repository.",
         ].join(" "),
         {
           question: z.string().describe("The full question for the user"),
@@ -234,6 +259,8 @@ async function executeQuery(
 
   const options: Options = {
     model: opts.model,
+    effort: opts.effort,
+    ...(opts.model === FALLBACK_MODEL ? {} : { fallbackModel: FALLBACK_MODEL }),
     cwd: config.workspace,
     ...(run.sessionId ? { resume: run.sessionId } : {}),
     permissionMode: "bypassPermissions",
@@ -252,7 +279,7 @@ async function executeQuery(
               command: "npx",
               // --no-sandbox: Chromium's own sandbox needs privileges Docker's
               // default profile withholds — the container is the boundary (§11)
-              args: ["@playwright/mcp", "--headless", "--isolated", "--no-sandbox"],
+              args: [PLAYWRIGHT_MCP, "--headless", "--isolated", "--no-sandbox"],
             },
           }
         : {}),
@@ -272,6 +299,7 @@ async function executeQuery(
                 tool_response?: unknown;
               };
               const toolName = String(hook.tool_name ?? "");
+              if (opts.auxiliary) return {};
               const items = checklist.record(toolName, hook.tool_input, hook.tool_response);
               if (items) {
                 sync.setChecklist(items);
@@ -307,6 +335,9 @@ async function executeQuery(
   /** The SDK's structured "this turn failed because of the limit" marker. */
   let sawRateLimitMarker = false;
   let warned = false;
+  let warnedFallback = false;
+  /** Set when the model declined the request and no fallback model took over. */
+  let refusal: string | null = null;
   const resolveResetsAt = (): string =>
     resetsAtFrom(rejectedLimitInfo) ??
     resetsAtFrom(latestLimitInfo) ??
@@ -333,15 +364,33 @@ async function executeQuery(
 
       if (message.type === "system" && message.subtype === "init") {
         sessionId = message.session_id;
-        state.setSession(opts.stage, sessionId);
-        // idempotent start re-send so the host records the session id (§6)
-        void sync.stageStart({
-          action: "start",
-          stage: opts.stage,
-          attempt: opts.attempt,
-          model: opts.model,
-          sessionId,
-        });
+        if (!opts.auxiliary) {
+          state.setSession(opts.stage, sessionId);
+          // idempotent start re-send so the host records the session id (§6)
+          void sync.stageStart({
+            action: "start",
+            stage: opts.stage,
+            attempt: opts.attempt,
+            model: opts.model,
+            sessionId,
+          });
+        }
+        continue;
+      }
+
+      // The model's safety classifiers can decline a request outright. With a
+      // fallback model the SDK retries the turn there and only tells us; with
+      // none left, the turn ends with nothing useful in it.
+      if (message.type === "system" && message.subtype === "model_refusal_fallback") {
+        sync.log(
+          "warn",
+          `${opts.model} declined this turn (category: ${message.api_refusal_category ?? "unspecified"}) — retried on ${FALLBACK_MODEL}`,
+          run.stageRunRef,
+        );
+        continue;
+      }
+      if (message.type === "system" && message.subtype === "model_refusal_no_fallback") {
+        refusal = message.api_refusal_category ?? "unspecified";
         continue;
       }
 
@@ -354,25 +403,21 @@ async function executeQuery(
             warned = true; // the SDK re-emits on every change — one log is enough
             sync.log(
               "warn",
-              `approaching the Claude usage limit (${info.utilization ?? "?"}% used)`,
+              `approaching the Claude usage limit (${typeof info.utilization === "number" ? utilizationPercent(info.utilization) : "?"}% used)`,
               run.stageRunRef,
             );
           }
           sync.reportRateLimitWarning({
-            utilization: info.utilization,
+            utilization:
+              typeof info.utilization === "number"
+                ? utilizationPercent(info.utilization)
+                : undefined,
             resetsAt: resetsAtFrom(info) ?? undefined,
           });
         }
-        // Every status, warning or not: `allowed` is the common case and the
-        // whole point of the settings-page usage bars. The API names one
-        // binding window per response, so the picture fills in over time.
-        if (info.rateLimitType && typeof info.utilization === "number") {
-          sync.reportUsageWindow({
-            type: info.rateLimitType,
-            utilization: info.utilization,
-            resetsAt: resetsAtFrom(info) ?? undefined,
-          });
-        }
+        // Every status, warning or not — the settings-page usage bars are fed
+        // from here (see usageWindowsFrom for what each SDK generation sends).
+        for (const window of usageWindowsFrom(info)) sync.reportUsageWindow(window);
         continue;
       }
 
@@ -380,6 +425,24 @@ async function executeQuery(
         // tracks the LAST assistant turn only — a 429 the SDK retried past must
         // not colour an unrelated failure later in the run
         sawRateLimitMarker = message.error === "rate_limit";
+        // The fallback model also takes over when the stage's model cannot be
+        // served at all (an SDK too old to know it, for one). That must not be
+        // silent: every stage would quietly run on the wrong model.
+        const served = message.message.model;
+        if (
+          !warnedFallback &&
+          message.parent_tool_use_id === null &&
+          served &&
+          served !== "<synthetic>" &&
+          !served.startsWith(opts.model)
+        ) {
+          warnedFallback = true;
+          sync.log(
+            "warn",
+            `this stage asked for ${opts.model} but is being served by ${served}`,
+            run.stageRunRef,
+          );
+        }
         forwardAssistantLogs(sync, message, run.stageRunRef);
         const usage = message.message.usage;
         if (usage) {
@@ -412,6 +475,15 @@ async function executeQuery(
         // result) — that's the pause/stop landing, not a failure. Drain and
         // let the interrupted branch below return paused/stopped.
         if (interrupted) continue;
+
+        // Checked before the generic failure path: without this a refusal shows
+        // up as a missing artifact ("planning produced no plan.md"), which says
+        // nothing about what actually happened.
+        if (refusal !== null || message.stop_reason === "refusal") {
+          throw new AgentError(
+            `the model declined this request (category: ${refusal ?? "unspecified"}) — rephrase the task, or pick a different model for this stage`,
+          );
+        }
 
         // A usage-limit result can arrive as subtype "success" with is_error
         // set — the message then carries its text on `result`, not `errors`.
@@ -511,15 +583,8 @@ export function isUsageLimitError(text: string): boolean {
   return TRANSIENT_LIMIT_RE.test(text);
 }
 
-/**
- * `SDKRateLimitInfo.resetsAt` is an epoch of undocumented unit — anything below
- * 1e12 can only be seconds. Returns null when absent or nonsensical.
- */
 function resetsAtFrom(info: SDKRateLimitInfo | null): string | null {
-  const raw = info?.resetsAt;
-  if (typeof raw !== "number" || !Number.isFinite(raw) || raw <= 0) return null;
-  const date = new Date(raw < 1e12 ? raw * 1000 : raw);
-  return Number.isNaN(date.getTime()) ? null : date.toISOString();
+  return epochToIso(info?.resetsAt);
 }
 
 // usage persistence across container restarts -------------------------------

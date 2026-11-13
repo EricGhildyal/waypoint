@@ -53,6 +53,12 @@ CREATE TABLE "Task" (
     "tokenBudget" INTEGER,
     "branchName" TEXT,
     "prUrl" TEXT,
+    "prNumber" INTEGER,
+    "prFeedbackCursor" DATETIME,
+    "prCiFixSha" TEXT,
+    "prCiFixCount" INTEGER NOT NULL DEFAULT 0,
+    "prStatus" JSONB,
+    "prMergeRequestedAt" DATETIME,
     "emailMessageId" TEXT,
     "reviewCycles" INTEGER NOT NULL DEFAULT 0,
     "testingCycles" INTEGER NOT NULL DEFAULT 0,
@@ -178,3 +184,4 @@ CREATE INDEX "Event_taskId_createdAt_id_idx" ON "Event"("taskId", "createdAt", "
 
 -- CreateIndex
 CREATE UNIQUE INDEX "User_email_key" ON "User"("email");
+

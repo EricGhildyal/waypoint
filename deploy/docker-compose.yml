@@ -38,6 +38,7 @@ services:
       TASK_DATA_DIR: /data/tasks
       RUNNER_IMAGE: ghcr.io/${GHCR_USER}/waypoint-runner:latest
       RUNNER_HOST_API: http://web:3000
+      RUNNER_DOCKER_RUNTIME: ${RUNNER_DOCKER_RUNTIME:-}
       TASKS_NETWORK: waypoint-tasks
       TASK_DATA_VOLUME: waypoint-task-data
     depends_on:

@@ -14,6 +14,8 @@ export const STATUS_COLORS: Record<string, BadgeColor> = {
   PAUSED: "amber",
   RATE_LIMITED: "orange",
   OPENING_PR: "teal",
+  PR_OPEN: "purple",
+  ADDRESSING_FEEDBACK: "sky",
   DONE: "green",
   FAILED: "red",
   CANCELLED: "zinc",
@@ -33,6 +35,8 @@ export const STATUS_LABELS: Record<string, string> = {
   PAUSED: "Paused",
   RATE_LIMITED: "Rate limited",
   OPENING_PR: "Opening PR",
+  PR_OPEN: "PR awaiting review",
+  ADDRESSING_FEEDBACK: "Addressing PR feedback",
   DONE: "Done",
   FAILED: "Failed",
   CANCELLED: "Cancelled",
@@ -43,6 +47,7 @@ export const STAGE_LABELS: Record<string, string> = {
   IMPLEMENTATION: "Implementation",
   REVIEW: "Review",
   TESTING: "Testing",
+  PR_FEEDBACK: "PR feedback",
 };
 
 export function formatTokens(n: number): string {

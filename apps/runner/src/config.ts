@@ -6,7 +6,7 @@ export interface RunnerConfig {
   hostApi: string;
   meta: TaskMeta;
   workspace: string;
-  /** transcript + artifact root on the shared task-data volume */
+  /** transcript + artifact root — this task's own slice of the task-data store */
   taskDataDir: string;
 }
 

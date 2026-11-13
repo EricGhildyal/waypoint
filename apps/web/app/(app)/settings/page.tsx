@@ -4,11 +4,12 @@ import { SettingsForm } from "./settings-form";
 export const dynamic = "force-dynamic";
 
 export default async function SettingsPage() {
-  const [settings, allowedEmails, claudeToken, gitPat] = await Promise.all([
+  const [settings, allowedEmails, claudeToken, gitPat, botPat] = await Promise.all([
     getAllSettings(),
     db.allowedEmail.findMany({ orderBy: { email: "asc" } }),
     db.secret.findFirst({ where: { projectId: null, key: "CLAUDE_CODE_OAUTH_TOKEN" } }),
     db.secret.findFirst({ where: { projectId: null, key: "GIT_PAT" } }),
+    db.secret.findFirst({ where: { projectId: null, key: "GIT_BOT_PAT" } }),
   ]);
   let models: string[] = [];
   try {
@@ -24,6 +25,7 @@ export default async function SettingsPage() {
       initialEmails={allowedEmails.map((e) => e.email)}
       claudeTokenSet={Boolean(claudeToken)}
       githubPatSet={Boolean(gitPat)}
+      githubBotPatSet={Boolean(botPat)}
     />
   );
 }

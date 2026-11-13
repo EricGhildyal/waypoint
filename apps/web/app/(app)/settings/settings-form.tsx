@@ -27,6 +27,7 @@ export function SettingsForm({
   usageWindows,
   claudeTokenSet,
   githubPatSet,
+  githubBotPatSet,
 }: {
   initialSettings: Record<string, string>;
   initialModels: string[];
@@ -34,6 +35,7 @@ export function SettingsForm({
   usageWindows: StoredUsageWindow[];
   claudeTokenSet: boolean;
   githubPatSet: boolean;
+  githubBotPatSet: boolean;
 }) {
   const [models, setModels] = useState(initialModels);
   const [msg, setMsg] = useState<string | null>(null);
@@ -55,6 +57,7 @@ export function SettingsForm({
       <Credentials
         claudeTokenSet={claudeTokenSet}
         githubPatSet={githubPatSet}
+        githubBotPatSet={githubBotPatSet}
         onResult={(m, e) => {
           setMsg(m);
           setError(e);
@@ -67,8 +70,16 @@ export function SettingsForm({
           setError(e);
         }}
       />
-      {msg ? <p className="text-sm text-green-400">{msg}</p> : null}
-      {error ? <p className="text-sm text-red-400">{error}</p> : null}
+      {/* pinned to the bottom of the viewport: the card that was just saved is
+          often a screen above the end of the page, where this would be unseen */}
+      {msg || error ? (
+        <p
+          role="status"
+          className={`sticky bottom-4 rounded-lg border border-zinc-700 bg-zinc-900 px-4 py-2 text-sm shadow-lg ${error ? "text-red-400" : "text-green-400"}`}
+        >
+          {error ?? msg}
+        </p>
+      ) : null}
     </div>
   );
 }
@@ -89,12 +100,40 @@ const ExecutionSchema = Yup.object({
     .typeError("Must be a number")
     .min(1, "At least 1")
     .required("Required"),
-  defaultModel: Yup.string().required("Required"),
+  defaultPlanningModel: Yup.string().required("Required"),
+  defaultImplementationModel: Yup.string().required("Required"),
+  defaultReviewModel: Yup.string().required("Required"),
+  defaultTestingModel: Yup.string().required("Required"),
+  prMergeMethod: Yup.string().oneOf(["merge", "squash", "rebase"]),
+  prTrustedLogins: Yup.string().test(
+    "logins",
+    "Comma-separated GitHub usernames, e.g. octocat, hubot",
+    // a typo here would silently stop every comment and approval being acted on
+    (value) =>
+      parseLogins(value ?? "").every((login) => /^[a-z\d](?:[a-z\d-]{0,38})$/i.test(login)),
+  ),
   appUrl: urlOrLocalhost("Must be a URL").required("Required"),
   notifyOnDone: Yup.string().oneOf(["true", "false"]),
   notifyOnNeedsInput: Yup.string().oneOf(["true", "false"]),
   notifyOnFailed: Yup.string().oneOf(["true", "false"]),
+  autoApproveEasyPlans: Yup.string().oneOf(["true", "false"]),
 });
+
+/** "@Eric, hubot" → ["Eric", "hubot"]: people paste logins with the @. */
+function parseLogins(value: string): string[] {
+  return value
+    .split(",")
+    .map((login) => login.trim().replace(/^@/, ""))
+    .filter(Boolean);
+}
+
+/** Default model per stage; a new task starts from these and can override each. */
+const MODEL_FIELDS = [
+  ["defaultPlanningModel", "Planning model"],
+  ["defaultImplementationModel", "Implementation model"],
+  ["defaultReviewModel", "Review model"],
+  ["defaultTestingModel", "Testing model"],
+] as const;
 
 function ExecutionSettings({
   initialSettings,
@@ -114,18 +153,33 @@ function ExecutionSettings({
       maxParallelTasks: initialSettings.maxParallelTasks ?? "3",
       containerMemGb: initialSettings.containerMemGb ?? "6",
       containerCpus: initialSettings.containerCpus ?? "2",
-      defaultModel: initialSettings.defaultModel ?? "claude-fable-5",
+      defaultPlanningModel: initialSettings.defaultPlanningModel ?? "",
+      defaultImplementationModel: initialSettings.defaultImplementationModel ?? "",
+      defaultReviewModel: initialSettings.defaultReviewModel ?? "",
+      defaultTestingModel: initialSettings.defaultTestingModel ?? "",
+      prMergeMethod: initialSettings.prMergeMethod ?? "merge",
+      prTrustedLogins: initialSettings.prTrustedLogins ?? "",
       appUrl: initialSettings.appUrl ?? "",
       notifyOnDone: initialSettings.notifyOnDone ?? "true",
       notifyOnNeedsInput: initialSettings.notifyOnNeedsInput ?? "true",
       notifyOnFailed: initialSettings.notifyOnFailed ?? "true",
+      autoApproveEasyPlans: initialSettings.autoApproveEasyPlans ?? "true",
     },
     validationSchema: ExecutionSchema,
     onSubmit: async (values, helpers) => {
       try {
         await apiFetch("/api/settings", {
           method: "PATCH",
-          body: JSON.stringify({ settings: values }),
+          // settings are stored as strings; a number input hands formik a
+          // number once edited, which the API would reject
+          body: JSON.stringify({
+            settings: Object.fromEntries(
+              Object.entries({
+                ...values,
+                prTrustedLogins: parseLogins(values.prTrustedLogins).join(", "),
+              }).map(([key, value]) => [key, String(value)]),
+            ),
+          }),
         });
         onResult("Settings saved.", null);
       } catch (err) {
@@ -152,9 +206,10 @@ function ExecutionSettings({
     }
   }
 
-  const modelOptions = models.includes(formik.values.defaultModel)
-    ? models
-    : [formik.values.defaultModel, ...models];
+  // a saved default that is no longer in the fetched list must stay selectable
+  const modelOptions = [
+    ...new Set([...MODEL_FIELDS.map(([key]) => formik.values[key]), ...models]),
+  ].filter(Boolean);
 
   return (
     <form onSubmit={formik.handleSubmit} noValidate>
@@ -174,34 +229,54 @@ function ExecutionSettings({
             <ErrorText>{fieldError(formik, "containerCpus")}</ErrorText>
           </Field>
         </div>
-        <div className="flex items-end gap-2">
-          <Field label="Default model" className="flex-1">
-            <Select {...formik.getFieldProps("defaultModel")}>
-              {modelOptions.map((m) => (
-                <option key={m} value={m}>
-                  {m}
-                </option>
-              ))}
-            </Select>
-            <ErrorText>{fieldError(formik, "defaultModel")}</ErrorText>
-          </Field>
+        <div className="grid gap-4 sm:grid-cols-2">
+          {MODEL_FIELDS.map(([key, label]) => (
+            <Field key={key} label={label}>
+              <Select {...formik.getFieldProps(key)}>
+                {modelOptions.map((m) => (
+                  <option key={m} value={m}>
+                    {m}
+                  </option>
+                ))}
+              </Select>
+              <ErrorText>{fieldError(formik, key)}</ErrorText>
+            </Field>
+          ))}
+        </div>
+        <div className="flex justify-end">
           <Button type="button" variant="outline" loading={refreshing} onClick={refreshModels}>
             Refresh models
           </Button>
+        </div>
+        <div className="grid gap-4 sm:grid-cols-2">
+          <Field label="PR merge method" hint="How an approved pull request is merged">
+            <Select {...formik.getFieldProps("prMergeMethod")}>
+              <option value="merge">Merge commit</option>
+              <option value="squash">Squash</option>
+              <option value="rebase">Rebase</option>
+            </Select>
+          </Field>
+          <Field
+            label="Trusted GitHub logins"
+            hint="Comma-separated. Only their PR comments and approvals are acted on. Empty = the owner of the GitHub PAT."
+          >
+            <Input {...formik.getFieldProps("prTrustedLogins")} />
+          </Field>
         </div>
         <Field label="App URL" hint="Used in email deeplinks">
           <Input {...formik.getFieldProps("appUrl")} />
           <ErrorText>{fieldError(formik, "appUrl")}</ErrorText>
         </Field>
-        <div className="grid gap-4 sm:grid-cols-3">
+        <div className="grid gap-4 sm:grid-cols-2">
           {(
             [
               ["notifyOnDone", "Email on done"],
               ["notifyOnNeedsInput", "Email on needs-input"],
               ["notifyOnFailed", "Email on failed"],
+              ["autoApproveEasyPlans", "Auto-approve easy plans"],
             ] as const
           ).map(([key, label]) => (
-            <Field key={key} label={label}>
+            <Field key={key} label={label} group>
               <ButtonGroup
                 full
                 aria-label={label}
@@ -231,10 +306,12 @@ const CredentialSchema = Yup.object({
 function Credentials({
   claudeTokenSet,
   githubPatSet,
+  githubBotPatSet,
   onResult,
 }: {
   claudeTokenSet: boolean;
   githubPatSet: boolean;
+  githubBotPatSet: boolean;
   onResult: (msg: string | null, err: string | null) => void;
 }) {
   return (
@@ -254,6 +331,14 @@ function Credentials({
         initiallySet={githubPatSet}
         onResult={onResult}
       />
+      <CredentialRotation
+        label="GitHub bot token"
+        hint="A separate bot account with write access to your repos. Waypoint clones, pushes and opens PRs as the bot, so you can approve them — GitHub does not let you approve your own PR. Without it, PRs open under your account. Projects can override with a GIT_BOT_PAT secret."
+        field="githubBotPat"
+        initiallySet={githubBotPatSet}
+        optional
+        onResult={onResult}
+      />
     </Card>
   );
 }
@@ -263,12 +348,15 @@ function CredentialRotation({
   hint,
   field,
   initiallySet,
+  optional = false,
   onResult,
 }: {
   label: string;
   hint: string;
-  field: "claudeOauthToken" | "githubPat";
+  field: "claudeOauthToken" | "githubPat" | "githubBotPat";
   initiallySet: boolean;
+  /** An unset optional credential is a choice, not a problem. */
+  optional?: boolean;
   onResult: (msg: string | null, err: string | null) => void;
 }) {
   const [isSet, setIsSet] = useState(initiallySet);
@@ -292,6 +380,20 @@ function CredentialRotation({
     },
   });
 
+  async function remove() {
+    if (!confirm(`Remove the ${label}?`)) return;
+    try {
+      await apiFetch("/api/settings", {
+        method: "PATCH",
+        body: JSON.stringify({ removeSecret: field }),
+      });
+      setIsSet(false);
+      onResult(`${label} removed.`, null);
+    } catch (err) {
+      onResult(null, err instanceof Error ? err.message : String(err));
+    }
+  }
+
   return (
     <form onSubmit={formik.handleSubmit} noValidate className="flex items-end gap-2">
       <Field label={label} className="flex-1" hint={hint}>
@@ -303,10 +405,21 @@ function CredentialRotation({
         />
         <ErrorText>{fieldError(formik, "value")}</ErrorText>
       </Field>
-      {isSet ? <Badge color="green">set</Badge> : <Badge color="red">missing</Badge>}
+      {isSet ? (
+        <Badge color="green">set</Badge>
+      ) : optional ? (
+        <Badge color="zinc">not set</Badge>
+      ) : (
+        <Badge color="red">missing</Badge>
+      )}
       <Button type="submit" variant="outline" loading={formik.isSubmitting}>
-        Rotate
+        {isSet ? "Rotate" : "Set"}
       </Button>
+      {optional && isSet ? (
+        <Button type="button" variant="outline" disabled={formik.isSubmitting} onClick={remove}>
+          Remove
+        </Button>
+      ) : null}
     </form>
   );
 }

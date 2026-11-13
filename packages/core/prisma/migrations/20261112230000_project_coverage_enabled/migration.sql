@@ -1,0 +1,1 @@
+ALTER TABLE "Project" ADD COLUMN "coverageEnabled" BOOLEAN NOT NULL DEFAULT true;

@@ -73,6 +73,10 @@ export interface TaskDetail {
   tokenTotal: number;
   branchName: string | null;
   prUrl: string | null;
+  /** What the orchestrator last saw on GitHub; null until its first look. */
+  prStatus: PrStatusView | null;
+  /** "Merge now" was pressed and the orchestrator has not acted on it yet. */
+  prMergeRequested: boolean;
   reviewCycles: number;
   testingCycles: number;
   createdAt: string;
@@ -83,6 +87,12 @@ export interface TaskDetail {
   plan: string | null;
   prBody: string | null;
   findings: FindingsView[];
+}
+
+export interface PrStatusView {
+  checks: "passing" | "failing" | "pending" | "none";
+  approved: boolean;
+  note: string;
 }
 
 export async function getTaskDetail(taskId: string): Promise<TaskDetail> {
@@ -140,6 +150,8 @@ export async function getTaskDetail(taskId: string): Promise<TaskDetail> {
     tokenTotal,
     branchName: task.branchName,
     prUrl: task.prUrl,
+    prStatus: (task.prStatus as PrStatusView | null) ?? null,
+    prMergeRequested: task.prMergeRequestedAt !== null,
     reviewCycles: task.reviewCycles,
     testingCycles: task.testingCycles,
     createdAt: task.createdAt.toISOString(),

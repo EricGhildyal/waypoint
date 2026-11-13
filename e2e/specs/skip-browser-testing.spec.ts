@@ -170,7 +170,7 @@ test.describe("Testing stage — skip branch", () => {
       headers,
       data: {
         cursor: null,
-        stage: { action: "start", stage: "TESTING", attempt: 1, model: "claude-fable-5" },
+        stage: { action: "start", stage: "TESTING", attempt: 1, model: "claude-fable-5-2" },
         events: [
           {
             type: "LOG",
@@ -231,7 +231,7 @@ test.describe("Testing stage — skip branch", () => {
       headers,
       data: {
         cursor: null,
-        stage: { action: "start", stage: "TESTING", attempt: 1, model: "claude-fable-5" },
+        stage: { action: "start", stage: "TESTING", attempt: 1, model: "claude-fable-5-2" },
       },
     });
     await request.post(url, {

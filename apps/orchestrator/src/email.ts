@@ -20,7 +20,7 @@ import { env } from "./env";
  *
  * Exactly-once:
  *  - question emails use Question.emailMessageId as the sent marker
- *  - status emails (DONE / FAILED / BUDGET_EXCEEDED) key off their
+ *  - status emails (PR_OPEN / DONE / FAILED / BUDGET_EXCEEDED) key off their
  *    STATUS_CHANGE event id, recorded as an `email-sent:{eventId}` LOG event
  */
 const resend = env.resendApiKey ? new Resend(env.resendApiKey) : null;
@@ -226,7 +226,7 @@ async function sendStatusEmails(appUrl: string): Promise<void> {
   });
   const interesting = changes.filter((c) => {
     const to = (c.payload as { to?: string }).to;
-    return to === "DONE" || to === "FAILED" || to === "PAUSED";
+    return to === "PR_OPEN" || to === "DONE" || to === "FAILED" || to === "PAUSED";
   });
   if (interesting.length === 0) return;
 
@@ -246,10 +246,23 @@ async function sendStatusEmails(appUrl: string): Promise<void> {
     const task = change.task;
     let ok = false;
 
-    if (to === "DONE" && (await flag("notifyOnDone"))) {
+    const from = (change.payload as { from?: string }).from;
+    if (to === "PR_OPEN" && from !== "OPENING_PR") {
+      // back from a feedback round — the reply on the PR is the notification
+      ok = true;
+    } else if (to === "PR_OPEN" && (await flag("notifyOnDone"))) {
+      ok = await sendTaskEmail(task, {
+        bodyLabel: "Pull request ready for review",
+        bodyHtml: block(
+          `PR opened: ${task.prUrl}\n\nComment on it to request changes — Waypoint addresses them and replies on the PR. Approve it and Waypoint merges it.`,
+        ),
+        link: task.prUrl ?? `${appUrl}/tasks/${task.id}`,
+        cta: "Review PR",
+      });
+    } else if (to === "DONE" && (await flag("notifyOnDone"))) {
       ok = await sendTaskEmail(task, {
         bodyLabel: "Done",
-        bodyHtml: block(task.prUrl ? `PR opened: ${task.prUrl}` : "Task completed."),
+        bodyHtml: block(task.prUrl ? `PR merged: ${task.prUrl}` : "Task completed."),
         link: task.prUrl ?? `${appUrl}/tasks/${task.id}`,
         cta: task.prUrl ? "Open PR" : "Open task",
       });

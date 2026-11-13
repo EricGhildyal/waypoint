@@ -40,10 +40,10 @@ interface CapturedEmail {
 }
 
 const MODELS = {
-  planningModel: "claude-fable-5",
-  implementationModel: "claude-fable-5",
-  reviewModel: "claude-fable-5",
-  testingModel: "claude-fable-5",
+  planningModel: "claude-fable-5-2",
+  implementationModel: "claude-fable-5-2",
+  reviewModel: "claude-fable-5-2",
+  testingModel: "claude-fable-5-2",
 };
 
 const TASK_IDS = [

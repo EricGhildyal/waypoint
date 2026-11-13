@@ -5,7 +5,8 @@
 #
 # `make run` is idempotent: it installs deps, generates the Prisma client,
 # applies migrations, seeds, prepares the local task-data dir + Docker network,
-# then runs web and the orchestrator together. Ctrl-C stops both.
+# builds the runner image if it's missing, then runs web and the orchestrator
+# together. Ctrl-C stops both.
 
 SHELL := /bin/bash
 .SHELLFLAGS := -eu -o pipefail -c
@@ -17,7 +18,6 @@ ENV_FILE   := $(ROOT)/.env.local
 STAMPS     := $(ROOT)/.make
 DB_FILE    := $(ROOT)/packages/core/prisma/dev.db
 GENERATED  := $(ROOT)/packages/core/src/generated/prisma
-MIGRATIONS := $(wildcard $(ROOT)/packages/core/prisma/migrations/*/migration.sql)
 MANIFESTS  := $(ROOT)/package.json $(ROOT)/bun.lock $(wildcard $(ROOT)/apps/*/package.json) $(wildcard $(ROOT)/packages/*/package.json)
 
 # Overridable knobs:  make run WEB_PORT=3001
@@ -45,7 +45,7 @@ set -a; source $(ENV_FILE); set +a
 endef
 
 .PHONY: help run setup deps prisma db-migrate db-migrate-dev db-seed db-reset \
-        db-studio runner-image typecheck lint lint-fix format format-check \
+        db-studio runner-image typecheck lint lint-fix format format-check test \
         check build doctor clean clean-tasks clean-db
 
 ## help: list targets
@@ -71,7 +71,7 @@ run: setup
 	  export RUNNER_HOST_API="http://$${gw:-172.17.0.1}:$(WEB_PORT)"
 	fi
 	if ! docker image inspect $(RUNNER_IMAGE) >/dev/null 2>&1; then
-	  echo "  ! $(RUNNER_IMAGE) is missing — tasks can't start until you run 'make runner-image'"
+	  echo "  ! $(RUNNER_IMAGE) is missing — tasks can't start (is Docker running?)"
 	fi
 	echo
 	if [[ "$$AUTH_DEV_BYPASS" == "1" ]]; then
@@ -107,10 +107,10 @@ run: setup
 	stop
 	exit $$code
 
-## setup: install deps, generate client, migrate, seed, prepare dirs (run does this)
+## setup: install deps, generate client, migrate, seed, prepare dirs, build the runner image if missing (run does this)
 # preflight first: a leftover dev server holds both the port and the SQLite lock,
 # which would otherwise surface as a cryptic "database is locked" from Prisma.
-setup: preflight deps prisma $(DB_FILE) $(STAMPS)/seed task-dir docker-net
+setup: preflight deps prisma db-migrate db-seed task-dir docker-net runner-image-ensure
 
 # ---------------------------------------------------------------- setup ------
 
@@ -131,17 +131,11 @@ $(STAMPS)/prisma: $(ROOT)/packages/core/prisma/schema.prisma $(STAMPS)/deps | $(
 	bun run db:generate
 	@touch $@
 
-# The db file IS the target: delete it and the next `make run` rebuilds it.
-$(DB_FILE): $(MIGRATIONS) $(STAMPS)/prisma
-	@echo "==> prisma migrate deploy"
-	bun run db:migrate:deploy
-	@touch $@
-
-$(STAMPS)/seed: $(ENV_FILE) $(DB_FILE) | $(STAMPS)
-	@echo "==> seed (settings, allowlist, global secrets)"
-	$(load_env)
-	bun run db:seed
-	@touch $@
+# Migrate and seed run on every setup instead of being skipped by timestamps.
+# Both are idempotent and take about a second, whereas "is dev.db newer than
+# the migrations?" is wrong whenever something else created the file: anything
+# that opens a missing SQLite database leaves an empty one behind, which then
+# looked up to date and went straight to a seed with no tables.
 
 # Task containers run as root and create /data/tasks/{taskId} themselves; the
 # default ACL keeps those dirs writable by you, so web can still drop artifacts
@@ -163,6 +157,18 @@ docker-net:
 	fi
 	docker network inspect $(TASKS_NETWORK) >/dev/null 2>&1 || \
 	  docker network create $(TASKS_NETWORK) >/dev/null
+
+.PHONY: runner-image-ensure
+# Only builds when the image is absent, so setup stays quick; `make runner-image`
+# rebuilds it after runner changes.
+runner-image-ensure:
+	@if ! docker info >/dev/null 2>&1; then
+	  exit 0 # docker-net already said so
+	fi
+	if ! docker image inspect $(RUNNER_IMAGE) >/dev/null 2>&1; then
+	  echo "==> $(RUNNER_IMAGE) is missing — building it (slow the first time)"
+	  $(MAKE) --no-print-directory runner-image
+	fi
 
 .PHONY: preflight
 preflight:
@@ -207,6 +213,9 @@ $(ENV_FILE):
 		MODEL_LOOKUP_ANTHROPIC_API_KEY=
 		# seeds the global GIT_PAT secret (clone/push/PR on your repos)
 		GITHUB_DEFAULT_PAT=
+		# optional: seeds the global GIT_BOT_PAT secret — a bot account's token,
+		# so PRs are not authored by you and you can approve them
+		WAYPOINT_BOT_PAT=
 		# leave empty to disable outbound email locally
 		RESEND_API_KEY=
 		RESEND_WEBHOOK_SECRET=
@@ -218,8 +227,9 @@ $(ENV_FILE):
 
 # ---------------------------------------------------------------- db ---------
 
-## db-migrate: apply committed migrations
+## db-migrate: apply committed migrations (creates dev.db if it is missing)
 db-migrate: $(STAMPS)/prisma
+	@echo "==> prisma migrate deploy"
 	bun run db:migrate:deploy
 
 ## db-migrate-dev: create a migration after editing schema.prisma (interactive)
@@ -227,11 +237,11 @@ db-migrate-dev: $(STAMPS)/prisma
 	bun run db:migrate:dev
 	@rm -f $(STAMPS)/prisma
 
-## db-seed: re-run the idempotent seed
-db-seed: $(ENV_FILE)
+## db-seed: run the idempotent seed (allowlist, global secrets, the Waypoint project)
+db-seed: $(ENV_FILE) | db-migrate
+	@echo "==> seed (allowlist, global secrets)"
 	$(load_env)
 	bun run db:seed
-	@touch $(STAMPS)/seed
 
 ## db-studio: browse dev.db in Prisma Studio
 db-studio: $(STAMPS)/prisma
@@ -239,12 +249,12 @@ db-studio: $(STAMPS)/prisma
 
 ## db-reset: delete dev.db and rebuild it from migrations + seed
 db-reset:
-	rm -f $(DB_FILE) $(DB_FILE)-wal $(DB_FILE)-shm $(STAMPS)/seed
-	@$(MAKE) --no-print-directory $(DB_FILE) $(STAMPS)/seed
+	rm -f $(DB_FILE) $(DB_FILE)-wal $(DB_FILE)-shm
+	@$(MAKE) --no-print-directory db-seed
 
 # ---------------------------------------------------------------- misc -------
 
-## runner-image: build waypoint-runner:latest (slow — Playwright base)
+## runner-image: (re)build waypoint-runner:latest (slow — Playwright base)
 runner-image:
 	docker build -f $(ROOT)/apps/runner/Dockerfile -t $(RUNNER_IMAGE) $(ROOT)
 
@@ -275,8 +285,12 @@ format: $(STAMPS)/deps
 format-check: $(STAMPS)/deps
 	bun run format:check
 
-## check: typecheck + lint + format-check — the whole gate, same as CI
-check: typecheck lint format-check
+## test: unit tests (bun test) — pure logic only, the Playwright suite is `make e2e`
+test: $(STAMPS)/prisma
+	bun run test
+
+## check: typecheck + lint + format-check + test — the whole gate, same as CI
+check: typecheck lint format-check test
 	@echo "  all checks passed"
 
 ## build: production build of the web app

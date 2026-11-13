@@ -7,8 +7,10 @@ export async function getSetting(key: string): Promise<string> {
 }
 
 export async function getNumberSetting(key: string): Promise<number> {
-  const value = Number(await getSetting(key));
-  return Number.isFinite(value) ? value : Number(SETTING_DEFAULTS[key] ?? 0);
+  const raw = await getSetting(key);
+  const value = Number(raw);
+  // Number("") is 0: a blanked-out row must fall back, not become zero
+  return raw.trim() !== "" && Number.isFinite(value) ? value : Number(SETTING_DEFAULTS[key] ?? 0);
 }
 
 export async function setSetting(key: string, value: string): Promise<void> {

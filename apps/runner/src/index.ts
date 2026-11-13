@@ -1,4 +1,6 @@
+import { writeComposeEnvFiles } from "./compose-env";
 import { loadConfig } from "./config";
+import { startDockerd } from "./dockerd";
 import { StateStore } from "./state";
 import {
   awaitFindingsApproval,
@@ -6,6 +8,7 @@ import {
   awaitStop,
   runImplementation,
   runPlanning,
+  runPrFeedback,
   runReview,
   runTesting,
 } from "./stages";
@@ -26,6 +29,8 @@ async function main(): Promise<void> {
   sync.start();
 
   try {
+    await startDockerd(sync);
+
     if (config.meta.verify) {
       await runVerify(config, sync, state);
       await finish(sync, 0);
@@ -38,6 +43,9 @@ async function main(): Promise<void> {
         setupDone: true,
         phase: state.get().phase === "SETUP" ? "PLANNING" : state.get().phase,
       });
+    } else {
+      // a recreated container: refresh the env files with its current secrets
+      await writeComposeEnvFiles(config, sync);
     }
 
     // A container that died during the pre-push sync leaves a conflicted merge
@@ -47,6 +55,10 @@ async function main(): Promise<void> {
     if (await abortLeftoverMerge(config)) {
       sync.log("warn", "discarded a merge left in progress by a previous container");
     }
+
+    // One PR-feedback round per process: the host stops the container after
+    // each round and starts it again for the next one.
+    let feedbackDone = false;
 
     pipeline: for (;;) {
       switch (state.get().phase) {
@@ -71,8 +83,13 @@ async function main(): Promise<void> {
           await runTesting(config, sync, state);
           break;
         case "AWAIT_STOP":
-          await awaitStop(sync);
-          break pipeline;
+          if ((await awaitStop(sync, !feedbackDone)) === "stop") break pipeline;
+          state.update({ phase: "PR_FEEDBACK" });
+          break;
+        case "PR_FEEDBACK":
+          await runPrFeedback(config, sync, state);
+          feedbackDone = true;
+          break;
       }
     }
     await finish(sync, 0);

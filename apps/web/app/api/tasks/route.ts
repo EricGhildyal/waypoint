@@ -1,7 +1,8 @@
 import { type NextRequest, NextResponse } from "next/server";
-import { db, getSetting, transition } from "@waypoint/core";
+import { db, getAllSettings, transition } from "@waypoint/core";
 import { z } from "zod";
 import { ApiError, apiError, assertSameOrigin, requireUser } from "@/lib/api";
+import { defaultModelsFor } from "@/lib/default-models";
 import { getTaskList } from "@/lib/task-list";
 
 /** GET doubles as the dashboard poll (§10). */
@@ -52,17 +53,17 @@ export async function POST(req: NextRequest) {
       if (!dependsOn) throw new ApiError(404, "dependency task not found");
     }
 
-    const defaultModel = await getSetting("defaultModel");
+    const defaults = defaultModelsFor(body.difficulty, await getAllSettings());
     const task = await db.task.create({
       data: {
         projectId: body.projectId,
         title: body.title,
         prompt: body.prompt,
         difficulty: body.difficulty,
-        planningModel: body.models?.planning || defaultModel,
-        implementationModel: body.models?.implementation || defaultModel,
-        reviewModel: body.models?.review || defaultModel,
-        testingModel: body.models?.testing || defaultModel,
+        planningModel: body.models?.planning || defaults.planning,
+        implementationModel: body.models?.implementation || defaults.implementation,
+        reviewModel: body.models?.review || defaults.review,
+        testingModel: body.models?.testing || defaults.testing,
         skipTesting: body.skipTesting ?? false,
         // a draft is mutually exclusive with both gates — null them out so a
         // stale time/dependency can't resurface once the user starts it
