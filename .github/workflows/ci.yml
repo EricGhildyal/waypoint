@@ -5,9 +5,35 @@ on:
     branches: [main]
   pull_request:
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   check:
+    name: ${{ matrix.name }}
     runs-on: ubuntu-latest
+    strategy:
+      # report every failing check, not just the first one
+      fail-fast: false
+      matrix:
+        include:
+          - name: Lint
+            run: bun run lint
+          - name: Format
+            run: bun run format:check
+          # migrate-diff drift check (§3.1): fail the build if schema and
+          # migrations diverge
+          - name: Migration drift
+            run: bun run db:drift
+          - name: Typecheck
+            run: bun run typecheck
+            prisma: true
+          # Unit tests only (pure logic: PR decisions, the state machine, UI
+          # grouping). The Playwright suite under e2e/ needs a running app.
+          - name: Test
+            run: bun run test
+            prisma: true
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
@@ -17,26 +43,9 @@ jobs:
       - name: Install
         run: bun install --frozen-lockfile
 
-      # Lint and format need neither the Prisma client nor type information,
-      # so they run first and fail fast.
-      - name: Lint
-        run: bun run lint
-
-      - name: Format
-        run: bun run format:check
-
       - name: Generate Prisma client
+        if: matrix.prisma
         run: bun run db:generate
 
-      # migrate-diff drift check (§3.1): fail the build if schema and
-      # migrations diverge
-      - name: Migration drift check
-        run: bun run db:drift
-
-      - name: Typecheck
-        run: bun run typecheck
-
-      # Unit tests only (pure logic: PR decisions, the state machine, UI
-      # grouping). The Playwright suite under e2e/ needs a running app.
-      - name: Test
-        run: bun run test
+      - name: ${{ matrix.name }}
+        run: ${{ matrix.run }}
